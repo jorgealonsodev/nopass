@@ -30,7 +30,7 @@ The system MUST expose one `HelperStatus` struct, serialized identically via `se
 
 ### Requirement: State File Placement and Permissions
 
-`/run/nopass/<uid>.state` MUST be written as mode `0644`, inside `/run/nopass/` (mode `0755`), and MUST be updated on every `enable`, `disable`, `expire`, and boot-time cleanup sweep. If `/run/nopass/` does not yet exist when the helper runs, the helper MUST create it (mode `0755`) itself before writing the state file rather than skip the write.
+`/run/nopass/<uid>.state` MUST be written as mode `0644`, inside `/run/nopass/` (mode `0755`), and MUST be updated on every `enable`, `disable` and `expire --uid`. The boot-time cleanup sweep instead REMOVES the state file of every rule it deleted, rather than rewriting it to `active: false`: at that point in boot nothing has read it yet, and a reader is specified to treat a missing state file as "unknown, reconcile against the rule file" (design.md 4.4). If `/run/nopass/` does not yet exist when the helper runs, the helper MUST create it (mode `0755`) itself before writing the state file rather than skip the write.
 
 #### Scenario: Enable writes the state file with correct mode
 - GIVEN a successful `enable`

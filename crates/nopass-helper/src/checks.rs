@@ -44,11 +44,28 @@ pub enum UidRejection {
 /// Looks up the username for `uid` via `getpwuid` (`nix::unistd::User`).
 /// Used for the audit record and by `ops::disable`'s username fallback
 /// chain (design.md §4.2: `getpwuid` failure falls back to the rule
-/// header's `nopass-user`, then to `""`).
+/// header's `nopass-user`, then to `""`). Collapses "no passwd entry" and
+/// a genuine `getpwuid_r` syscall failure into the same `Err` — callers
+/// that need to tell the two apart (see [`lookup_user_optional`]) must
+/// not use this function.
 pub fn lookup_user(uid: u32) -> Result<String, HelperError> {
+    lookup_user_optional(uid)?.ok_or_else(|| HelperError::Internal(format!("no passwd entry for uid {uid}")))
+}
+
+/// Looks up the username for `uid` via `getpwuid`, distinguishing "no
+/// passwd entry" (`Ok(None)`) from a genuine `getpwuid_r` syscall failure
+/// (`Err`). `ops::enable`'s production wrapper uses this instead of
+/// [`lookup_user`]: a missing entry must surface through
+/// `UidRejection::Unknown` (exit 11), never through `HelperError::Internal`
+/// (exit 1) — this is the exact seam verify-report finding C1 identified
+/// (privilege-admission §UID Range Admission; helper-cli §Typed Exit Code
+/// Mapping, "no two distinct failure causes share a code with a different
+/// meaning"). Every other caller in this crate only wants "do we have a
+/// name or not", so [`lookup_user`] stays their entry point unchanged.
+pub fn lookup_user_optional(uid: u32) -> Result<Option<String>, HelperError> {
     match nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)) {
-        Ok(Some(user)) => Ok(user.name),
-        Ok(None) => Err(HelperError::Internal(format!("no passwd entry for uid {uid}"))),
+        Ok(Some(user)) => Ok(Some(user.name)),
+        Ok(None) => Ok(None),
         Err(errno) => Err(HelperError::Internal(format!("getpwuid_r failed for uid {uid}: {errno}"))),
     }
 }
@@ -212,6 +229,24 @@ mod tests {
         // check can reject it.
         let range = UidRange { min: 1000, max: 4_294_967_294 };
         assert_eq!(admit_uid(4_294_967_294, &range), Err(UidRejection::Unknown));
+    }
+
+    // --- lookup_user / lookup_user_optional ------------------------------
+
+    #[test]
+    fn lookup_user_optional_returns_none_for_a_uid_absent_from_getpwuid() {
+        assert_eq!(lookup_user_optional(4_294_967_294).unwrap(), None);
+    }
+
+    #[test]
+    fn lookup_user_still_maps_an_absent_uid_to_an_internal_error_for_its_existing_callers() {
+        // `lookup_user` itself is unchanged — only `ops::enable`'s
+        // production wrapper switched to `lookup_user_optional`. Every
+        // other caller (disable's fallback chain, status's best-effort
+        // lookup) still wants a flat `Result<String, _>` and must keep
+        // getting one.
+        let err = lookup_user(4_294_967_294).unwrap_err();
+        assert!(matches!(err, HelperError::Internal(_)));
     }
 
     // --- admit_uid must never diverge from UidRange::admits -------------

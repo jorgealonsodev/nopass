@@ -87,7 +87,27 @@ pub fn enable(
 
     let now = unix_now();
     let expiry = resolve_expiry_audited(uid, until, until_reboot, now)?;
-    let raw_user = checks::lookup_user(uid)?;
+
+    // Step 5's getpwuid half. verify-report C1: this used to be a bare
+    // `checks::lookup_user(uid)?`, which maps a missing passwd entry to
+    // `HelperError::Internal` (exit 1) — the same code a genuine syscall
+    // failure produces, and it ran BEFORE `enable_inner` ever reaches
+    // `checks::admit_uid`, the only place `UidRejection::Unknown` (exit
+    // 11) is otherwise produced. That made privilege-admission §UID
+    // Range Admission's "uid not present in getpwuid → exit 11" scenario
+    // unreachable in production. `lookup_user_optional` distinguishes
+    // "no entry" from a genuine syscall error so this call site can map
+    // the two differently: a genuinely missing uid is admission
+    // rejection, not an internal failure.
+    let raw_user = match checks::lookup_user_optional(uid) {
+        Ok(Some(name)) => name,
+        Ok(None) => {
+            let err = HelperError::UidRejected(checks::UidRejection::Unknown);
+            audit_rejection(AuditEvent::Enable, uid, "", expiry, &err);
+            return Err(err);
+        }
+        Err(err) => return Err(err),
+    };
     let login_defs = std::fs::read_to_string("/etc/login.defs").unwrap_or_default();
     let uid_range = logindefs::parse(&login_defs);
 
@@ -1102,6 +1122,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // verify-report W1: all eight `capture_audit` call sites elsewhere in
+    // this module cover a rejection, rollback, or duration failure. None
+    // of them ever asserted that a SUCCESSFUL transaction is audited —
+    // deleting the terminal `journal::audit(&AuditRecord { outcome:
+    // AuditOutcome::Ok, .. })` calls in `enable_inner`/`disable_inner`/
+    // `expire_uid_inner` left the whole suite green. The three tests
+    // below (this one, `disable_inner_audits_a_successful_disable_with_
+    // the_ok_outcome`, and `expire_uid_inner_audits_a_successful_
+    // deletion_with_the_ok_outcome`) close that gap.
+    #[test]
+    fn enable_inner_audits_a_successful_grant_with_the_ok_outcome() {
+        let (root, layout) = fresh_layout("enable_audit_ok");
+        let binaries = fake_binaries(&root);
+        let runner = ScriptedRunner::new(vec![
+            (sudo_probe_spec(&binaries, "jorge"), Ok(ok(0))),
+            (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
+            (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0))),
+        ]);
+        let text = capture_audit(|| {
+            enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::Never).unwrap();
+        });
+        assert!(text.contains("EVENT=\"enable\""), "audit text: {text}");
+        assert!(text.contains(&format!("UID={REAL_UID}")), "audit text: {text}");
+        assert!(text.contains("USER=\"jorge\""), "audit text: {text}");
+        assert!(text.contains("OUTCOME=\"ok\""), "audit text: {text}");
+        assert!(text.contains("EXIT=0"), "audit text: {text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // Commissioned by the Phase 8 apply-phase brief: design.md §4.1's
     // rollback table row 16 says a state-file write failure is "logged,
     // exit stays 0", and Phase 7's own verification flagged this as the
@@ -1193,6 +1242,25 @@ mod tests {
         let header = RuleHeader { user: "jorge".to_string(), expires: Expiry::At { epoch: 1_789_000_000 } };
         let expected_user = resolve_username(checks::lookup_user(REAL_UID), Some(&header));
         assert_eq!(status.user, expected_user);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // verify-report W1: see `enable_inner_audits_a_successful_grant_with_
+    // the_ok_outcome` above for the full rationale.
+    #[test]
+    fn disable_inner_audits_a_successful_disable_with_the_ok_outcome() {
+        let (root, layout) = fresh_layout("disable_audit_ok");
+        let binaries = fake_binaries(&root);
+        let content = render_rule(REAL_UID, "jorge", Expiry::Never);
+        std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
+        let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
+        let text = capture_audit(|| {
+            disable_inner(&layout, &runner, &binaries, REAL_UID).unwrap();
+        });
+        assert!(text.contains("EVENT=\"disable\""), "audit text: {text}");
+        assert!(text.contains(&format!("UID={REAL_UID}")), "audit text: {text}");
+        assert!(text.contains("OUTCOME=\"ok\""), "audit text: {text}");
+        assert!(text.contains("EXIT=0"), "audit text: {text}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1495,6 +1563,25 @@ mod tests {
         assert_eq!(status.expires, None);
         assert_eq!(status.user, "jorge");
         assert_eq!(status.updated_at, 1_000_000, "updated_at must be the injected `now`, not a live clock read");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // verify-report W1: see `enable_inner_audits_a_successful_grant_with_
+    // the_ok_outcome` above for the full rationale.
+    #[test]
+    fn expire_uid_inner_audits_a_successful_deletion_with_the_ok_outcome() {
+        let (root, layout) = fresh_layout("expire_audit_ok");
+        let binaries = fake_binaries(&root);
+        let content = render_rule(REAL_UID, "jorge", Expiry::At { epoch: 500_000 });
+        std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
+        let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
+        let text = capture_audit(|| {
+            expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+        });
+        assert!(text.contains("EVENT=\"expire\""), "audit text: {text}");
+        assert!(text.contains(&format!("UID={REAL_UID}")), "audit text: {text}");
+        assert!(text.contains("OUTCOME=\"ok\""), "audit text: {text}");
+        assert!(text.contains("EXIT=0"), "audit text: {text}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

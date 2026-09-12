@@ -47,7 +47,8 @@ The system MUST create the rule file atomically: open the temp path (containing 
 #### Scenario: Concurrent enable requests serialize instead of corrupting the file
 - GIVEN one `enable` invocation is mid-write and holds the lock
 - WHEN a second `enable` for the same or a different uid starts
-- THEN the second call blocks on the flock until the first completes, then proceeds against a consistent file state
+- THEN the second call does NOT wait: the `flock` is taken with `LockExclusiveNonblock`, so the second caller fails fast with exit 15 and mutates nothing, leaving the first call's file state consistent
+- Rationale: a privileged helper invoked from a desktop click must never hang holding a polkit authorization open; failing fast lets the caller retry or report. See design.md, Architecture Decision "`flock` on `/run/nopass/lock`, not an `O_EXCL` lock file".
 - Testable via: root-only container test
 
 ### Requirement: Rule Removal

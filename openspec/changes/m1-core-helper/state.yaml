@@ -15,7 +15,7 @@ phases:
   design: done
   tasks: done
   apply: done
-  verify: in_progress
+  verify: remediated-pending-reverify
   archive: pending
 engram_topics:
   explore: sdd/m1-core-helper/explore
@@ -40,7 +40,7 @@ apply_progress:
   phase_9_data_artifacts: settled-passed   # verbatim per design section 7, no deviation
   phase_10_container_lane: settled-passed   # root lane genuinely executed in Debian and Fedora containers
 tasks_complete: 45/45
-workspace_tests: 243
+workspace_tests: 257
 delivery:
   work_units_planned: 14   # revised from 13 after Phase 4 overran its forecast
   deferred: []

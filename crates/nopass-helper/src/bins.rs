@@ -149,6 +149,46 @@ mod tests {
         assert!(matches!(err, HelperError::BinaryMissing { name: "not-a-real-binary" }));
     }
 
+    // verify-report W5: every other test in this module builds a
+    // `Binaries` via `from_candidates` with synthetic, test-owned paths —
+    // the REAL production table `Binaries::system()` builds is never
+    // itself asserted. A typo or reordering there (the `visudo` order
+    // `/usr/sbin` → `/sbin` → `/usr/bin` is distro-load-bearing per
+    // design.md §3) would fail nothing. This test reads the private
+    // `candidates` map directly (this `mod tests` is a child module of
+    // `bins`, so it has that access) and pins both the exact name set
+    // and the exact per-name candidate order, without requiring any of
+    // those paths to exist on the machine running this suite — `resolve`
+    // is deliberately never called here.
+    #[test]
+    fn system_candidate_table_matches_design_md_section_3_names_and_order() {
+        let bins = Binaries::system();
+        let expected: &[(&str, &[&str])] = &[
+            ("visudo", &["/usr/sbin/visudo", "/sbin/visudo", "/usr/bin/visudo"]),
+            ("sudo", &["/usr/bin/sudo", "/bin/sudo"]),
+            ("systemctl", &["/usr/bin/systemctl", "/bin/systemctl"]),
+            ("systemd-run", &["/usr/bin/systemd-run", "/bin/systemd-run"]),
+            ("sh", &["/bin/sh", "/usr/bin/sh"]),
+        ];
+
+        assert_eq!(
+            bins.candidates.len(),
+            expected.len(),
+            "Binaries::system() must declare exactly the names design.md §3 lists, no more, no fewer"
+        );
+        for (name, expected_paths) in expected {
+            let actual = bins
+                .candidates
+                .get(name)
+                .unwrap_or_else(|| panic!("Binaries::system() must declare a candidate list for {name:?}"));
+            let actual_str: Vec<&str> = actual.iter().map(|p| p.to_str().unwrap()).collect();
+            assert_eq!(
+                &actual_str, expected_paths,
+                "candidate order for {name:?} must match design.md §3 exactly (first-existing-wins)"
+            );
+        }
+    }
+
     #[test]
     fn a_directory_candidate_is_skipped_and_a_later_valid_file_candidate_wins() {
         // `Path::exists()` returns true for a directory too; a directory

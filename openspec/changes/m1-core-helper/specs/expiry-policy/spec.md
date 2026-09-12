@@ -81,7 +81,8 @@ Before creating a new expiry timer for a uid, the system MUST stop any existing 
 #### Scenario: Permanent and until-reboot enables never touch the timer
 - GIVEN `enable` with no flags or with `--until-reboot`
 - WHEN it runs
-- THEN neither `systemctl` nor `systemd-run` is invoked
+- THEN `systemd-run` is never invoked, so no timer is scheduled
+- AND `systemctl stop <unit>.timer` IS invoked first, unconditionally and tolerant of any exit status, so a stale timer left by a previous `At` activation cannot outlive the new permanent or until-reboot grant (design.md 4.1 step 14)
 - Testable via: `cargo test`
 
 ### Requirement: Expiry Re-validation Before Deletion

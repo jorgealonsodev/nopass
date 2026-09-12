@@ -78,25 +78,69 @@ fn gate_satisfied(env_flag_is_one: bool, is_root: bool) -> bool {
     env_flag_is_one && is_root
 }
 
-/// Checks the real environment and, when not admitted, prints to stderr
-/// exactly which of the two conditions failed. With `--nocapture` this is
-/// how a reader tells a genuine skip apart from a test that ran and found
-/// nothing wrong — a suite that silently reports "ok" for a test that
-/// never executed a single assertion would read as evidence when it is
-/// not.
+/// The three outcomes `root_gate` can reach for a given
+/// `(env_flag_is_one, is_root)` pair. Kept as a pure, unconditionally
+/// testable classification — same reasoning as `gate_satisfied` — so the
+/// truth table (specifically: which single combination must panic
+/// instead of quietly skip) is real, provable evidence rather than a
+/// claim (verify-report R / W8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateOutcome {
+    Admitted,
+    SkippedQuietly,
+    /// `NOPASS_ROOT_TESTS=1` is set but the process is not root. This
+    /// combination is never a legitimate configuration on its own — it
+    /// is always a runner that intended to execute the root-only lane
+    /// and did not actually get root (a misconfigured CI job, a
+    /// container run without `--privileged`/`--user root`, etc.).
+    /// Quietly skipping here is exactly the failure mode that lets a CI
+    /// root lane rot green: it would report "13/13 passing" while 12
+    /// tests executed zero assertions.
+    Misconfigured,
+}
+
+fn classify_gate(env_flag_is_one: bool, is_root: bool) -> GateOutcome {
+    if gate_satisfied(env_flag_is_one, is_root) {
+        GateOutcome::Admitted
+    } else if env_flag_is_one && !is_root {
+        GateOutcome::Misconfigured
+    } else {
+        GateOutcome::SkippedQuietly
+    }
+}
+
+/// Checks the real environment and, when not admitted, either panics
+/// (see [`GateOutcome::Misconfigured`]) or prints to stderr exactly which
+/// of the two conditions failed and returns quietly. With `--nocapture`
+/// the printed line is how a reader tells a genuine, intentional skip
+/// apart from a test that ran and found nothing wrong — a suite that
+/// silently reports "ok" for a test that never executed a single
+/// assertion would read as evidence when it is not. Every skip
+/// combination OTHER than `Misconfigured` (neither condition set, or
+/// real root without the env flag) is a legitimate developer-machine
+/// default and keeps skipping quietly, exactly as before this fix.
 fn root_gate(test_name: &str) -> bool {
     let env_flag_is_one = std::env::var("NOPASS_ROOT_TESTS").as_deref() == Ok("1");
     let is_root = nix::unistd::geteuid().is_root();
-    let admitted = gate_satisfied(env_flag_is_one, is_root);
-    if !admitted {
-        eprintln!(
-            "SKIPPED {test_name}: root-only gate not satisfied (NOPASS_ROOT_TESTS=1: {env_flag_is_one}, \
-             geteuid().is_root(): {is_root}). This test compiled but executed zero assertions. Run inside \
-             tests/containers/Containerfile.{{debian,fedora}} as root with NOPASS_ROOT_TESTS=1 set — see \
-             tests/containers/README.md."
-        );
+    match classify_gate(env_flag_is_one, is_root) {
+        GateOutcome::Admitted => true,
+        GateOutcome::Misconfigured => panic!(
+            "{test_name}: NOPASS_ROOT_TESTS=1 is set but this process is not root \
+             (geteuid().is_root() == false). This combination is never a legitimate configuration: it means a \
+             runner intended to execute the root-only lane but did not actually get root. Run as real root inside \
+             tests/containers/Containerfile.{{debian,fedora}} with NOPASS_ROOT_TESTS=1 set, or unset \
+             NOPASS_ROOT_TESTS to skip this lane intentionally — see tests/containers/README.md."
+        ),
+        GateOutcome::SkippedQuietly => {
+            eprintln!(
+                "SKIPPED {test_name}: root-only gate not satisfied (NOPASS_ROOT_TESTS=1: {env_flag_is_one}, \
+                 geteuid().is_root(): {is_root}). This test compiled but executed zero assertions. Run inside \
+                 tests/containers/Containerfile.{{debian,fedora}} as root with NOPASS_ROOT_TESTS=1 set — see \
+                 tests/containers/README.md."
+            );
+            false
+        }
     }
-    admitted
 }
 
 /// Always runs, on every machine: proves the gate genuinely requires BOTH
@@ -107,6 +151,27 @@ fn gate_requires_both_conditions_true_before_admitting() {
     assert!(!gate_satisfied(true, false), "the env flag alone must not admit — real root is still required");
     assert!(!gate_satisfied(false, true), "real root alone must not admit — NOPASS_ROOT_TESTS=1 is still required");
     assert!(gate_satisfied(true, true), "both conditions together must admit");
+}
+
+/// verify-report R / W8: confirmed RED first — before this fix,
+/// `root_gate` had no `Misconfigured` branch at all and every non-admitted
+/// combination (including `NOPASS_ROOT_TESTS=1` without real root) quietly
+/// returned `false`; the equivalent of this table would have asserted
+/// `SkippedQuietly` for that combination too. This is the same
+/// "unconditionally provable truth table" pattern
+/// `gate_requires_both_conditions_true_before_admitting` already
+/// establishes for `gate_satisfied` — it runs on every machine, including
+/// this one, with no root and no env var required.
+#[test]
+fn classify_gate_panics_only_when_the_env_flag_is_set_without_real_root() {
+    assert_eq!(classify_gate(false, false), GateOutcome::SkippedQuietly, "neither condition: skip quietly");
+    assert_eq!(classify_gate(false, true), GateOutcome::SkippedQuietly, "real root alone: skip quietly");
+    assert_eq!(classify_gate(true, true), GateOutcome::Admitted, "both conditions: admitted");
+    assert_eq!(
+        classify_gate(true, false),
+        GateOutcome::Misconfigured,
+        "the env flag set without real root is a misconfigured runner, never a quiet skip"
+    );
 }
 
 /// Wraps a test body so it always compiles and always registers as a real
@@ -256,6 +321,59 @@ root_only_test!(real_enable_writes_a_root_owned_mode_0440_rule_and_a_mode_0644_s
     assert_eq!(status.uid, uid);
     assert!(status.active);
     assert_eq!(status.expires, Some(Expiry::Never));
+
+    let _ = run_helper(&["disable"], Some(uid));
+    cleanup_rule_and_state(&layout, uid);
+    delete_test_user(user);
+});
+
+// --- 1b. status stdout for an active grant ---------------------------------
+
+// verify-report W4: `helper-observability` "HelperStatus JSON Contract,
+// stdout and state-file content share the same shape" had no test
+// executing the real `status` subcommand's stdout for either case. The
+// "missing rule" half is covered unprivileged in
+// `tests/process_boundary.rs`; the "active grant" half needs a real,
+// root-owned rule file, hence its place here.
+root_only_test!(real_status_stdout_for_an_active_grant_matches_the_state_file_exactly, {
+    let _guard = serialize();
+    let layout = Layout::system();
+    let user = "nopasstest01b";
+    let uid = create_test_user(user);
+    cleanup_rule_and_state(&layout, uid);
+
+    let enable_output = run_helper(&["enable"], Some(uid));
+    assert_eq!(enable_output.status.code(), Some(0), "setup: enable must succeed before status is tested");
+
+    let status_output = run_helper(&["status"], Some(uid));
+    assert_eq!(
+        status_output.status.code(),
+        Some(0),
+        "status failed: stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+    let stdout = String::from_utf8(status_output.stdout).expect("stdout must be valid UTF-8");
+    assert_eq!(stdout.matches('\n').count(), 1, "stdout must be exactly one JSON line: {stdout:?}");
+
+    let stdout_status: HelperStatus =
+        serde_json::from_str(stdout.trim_end()).expect("stdout must be valid HelperStatus JSON");
+    assert_eq!(stdout_status.uid, uid);
+    assert_eq!(stdout_status.user, user);
+    assert!(stdout_status.active);
+    assert_eq!(stdout_status.expires, Some(Expiry::Never));
+
+    // The state file `enable` just wrote is the other half of "share the
+    // same shape" — same serializer, same JSON line, differing only in
+    // `updated_at` (each is stamped with its own call's clock read).
+    let raw_state = std::fs::read_to_string(layout.state_path(uid)).unwrap();
+    let state_status: HelperStatus =
+        serde_json::from_str(raw_state.trim_end()).expect("state file must be valid HelperStatus JSON");
+    assert_eq!(stdout_status.schema, state_status.schema);
+    assert_eq!(stdout_status.uid, state_status.uid);
+    assert_eq!(stdout_status.user, state_status.user);
+    assert_eq!(stdout_status.active, state_status.active);
+    assert_eq!(stdout_status.expires, state_status.expires);
+    assert_eq!(stdout_status.rule_path, state_status.rule_path);
 
     let _ = run_helper(&["disable"], Some(uid));
     cleanup_rule_and_state(&layout, uid);

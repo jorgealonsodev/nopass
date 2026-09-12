@@ -53,7 +53,8 @@ The system MUST admit a target uid only when it exists via `getpwuid` and `UID_M
 #### Scenario: uid 0 is always rejected
 - GIVEN `/etc/login.defs` sets `UID_MIN 0`
 - WHEN admission runs for uid 0
-- THEN the helper exits 11
+- THEN admission rejects it with exit 11, regardless of what `UID_MIN` permits
+- AND via the polkit path this is unreachable, because `PKEXEC_UID=0` is already refused at invocation-context resolution with exit 10 (design.md 9). Both refusals are absolute; the earlier one simply wins. Exit 11 for uid 0 remains reachable from `expire` and from library callers.
 - Testable via: `cargo test`
 
 #### Scenario: uid 65534 (`nobody`) is rejected
