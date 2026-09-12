@@ -34,7 +34,8 @@ Rationale for stacked-to-main: the repository is greenfield (no deployed users),
 | 4a | `cli` + `error` (exit-code mapping) | PR 4a | `cargo test -p nopass-helper cli:: error::` | N/A — parser/mapping only | delete `cli.rs`, `error.rs` |
 | 4b | `runner` (`CommandRunner`/`SystemRunner`/`ScriptedRunner`) | PR 4b | `cargo test -p nopass-helper runner::` | spawns real short-lived children to prove env clearing and signal death | delete `runner.rs` |
 | 4c | `bins` + `main.rs` dispatch wiring | PR 4c | `cargo test -p nopass-helper bins::` | N/A — candidate-path resolution only | delete `bins.rs`; revert `main.rs` to the Phase 1 stub |
-| 5 | `uid` + `checks` (admission) | PR 5 | `cargo test -p nopass-helper uid:: checks::` | N/A — `ScriptedRunner`-only sudo probe | delete `uid.rs`, `checks.rs` |
+| 5a | `uid` (invocation-context resolution) | PR 5a | `cargo test -p nopass-helper uid::` | N/A — injected uid params, no process spawned | delete `uid.rs` |
+| 5b | `checks` (admission + sudoer probe) + `error` payload widening | PR 5b | `cargo test -p nopass-helper checks:: error::` | N/A — `ScriptedRunner`-only sudo probe | delete `checks.rs`; revert `UidRejected` to a unit variant; revert `main.rs`/`Cargo.toml` |
 | 6a | `lock` (flock) | PR 6a | `cargo test -p nopass-helper lock::` | N/A — unprivileged `TempDir` flock | delete `lock.rs` |
 | 6b | `fileops` + `tests/fileops_tempdir.rs` | PR 6b | `cargo test -p nopass-helper --test fileops_tempdir` | `podman run … cargo test --workspace` (Debian/Fedora root lane, optional here) | delete `fileops.rs`, `tests/fileops_tempdir.rs` |
 | 7a | `timer` + `ops::{enable,disable,status}` | PR 7a | `cargo test -p nopass-helper timer:: ops::enable ops::disable ops::status` | N/A — `ScriptedRunner` argv assertions | delete `timer.rs`; revert `ops.rs` to pre-enable/disable/status state |
@@ -57,7 +58,7 @@ Rationale for stacked-to-main: the repository is greenfield (no deployed users),
 - [x] 1.6 RED/GREEN: `cargo test --workspace` compiles and passes with zero tests (no behavior yet — this is the baseline gate itself).
 - [x] 1.7 GREEN: `cargo build --release` succeeds under the pinned 1.85 toolchain and the release profile.
 - [x] 1.8 Modify `openspec/config.yaml` — promote `strict_tdd: true`, `testing.strict_tdd_effective: true`, `rules.apply.tdd: true`, `rules.apply.test_command: "cargo test --workspace"`, `rules.verify.test_command`/`build_command` per design §8.
-- [ ] 1.9 Commit `Cargo.lock` together with the rest of work unit 1. The lockfile is generated and present in the working tree but untracked; the repository has no commits yet, so this lands when PR 1 is opened.
+- [x] 1.9 Commit `Cargo.lock`. Landed in the initial commit `c306f34` together with phases 1-4. The work preceded the git history, and by the time this was closed `lib.rs` and `main.rs` had already moved past their phase-1 content, so work unit 1 could not be committed in isolation. Maintainer chose one initial commit; the chained work-unit plan applies from phase 5 onward.
 
 ## Phase 2: `nopass-core` — Template, Header, Expiry
 
@@ -90,9 +91,9 @@ Rationale for stacked-to-main: the repository is greenfield (no deployed users),
 
 *(Spec: `privilege-admission`; Design §2, §4.1 steps 3/5/6)*
 
-- [ ] 5.1 RED `crates/nopass-helper/src/uid.rs`: `enable`/`disable`/`status` resolve uid from `PKEXEC_UID=1000`; `PKEXEC_UID` missing → exit 10, no write; `PKEXEC_UID=abc` → exit 10; `expire --uid` with `PKEXEC_UID` set → exit 10; `expire` invoked non-root without `PKEXEC_UID` (simulated via injected uid) → exit 10 (privilege-admission §UID Resolution by Invocation Context; threat matrix "Privileged invocation context" — one RED test per listed case, zero mutation asserted). GREEN: implement `InvocationContext`, `resolve`.
-- [ ] 5.2 RED `crates/nopass-helper/src/checks.rs`: `admit_uid` — default-range admit; uid 0 always rejected even with `UID_MIN 0`; uid 65534 rejected (exceeds `UID_MAX`); uid absent from `getpwuid` (stubbed) rejected (privilege-admission §UID Range Admission). GREEN: implement `lookup_user`, `admit_uid`, `UidRejection`, `in_admin_group` (advisory pre-check only). **Also restore the deferred payload:** Phase 4 shipped `HelperError::UidRejected` as a unit variant because `checks.rs` did not exist yet. Now that `UidRejection` exists, widen it to `UidRejected(checks::UidRejection)` so the rejection reason survives to the Phase 8 journald audit record. Exit code 11 must not change.
-- [ ] 5.3 RED `checks.rs` `is_sudoer`: exact argv `LANG=C /usr/bin/sudo -n -l -U <user> /bin/sh`, no shell/`PATH`, `PKEXEC_UID` absent from the child env (threat matrix: External command composition, argv leg); probe exit 0 → admitted; probe non-zero even with `sudo`-group membership → rejected (privilege-admission §Existing-Sudoer Probe). GREEN: implement `is_sudoer` via `CommandRunner`.
+- [x] 5.1 RED `crates/nopass-helper/src/uid.rs`: `enable`/`disable`/`status` resolve uid from `PKEXEC_UID=1000`; `PKEXEC_UID` missing → exit 10, no write; `PKEXEC_UID=abc` → exit 10; `expire --uid` with `PKEXEC_UID` set → exit 10; `expire` invoked non-root without `PKEXEC_UID` (simulated via injected uid) → exit 10 (privilege-admission §UID Resolution by Invocation Context; threat matrix "Privileged invocation context" — one RED test per listed case, zero mutation asserted). GREEN: implement `InvocationContext`, `resolve`.
+- [x] 5.2 RED `crates/nopass-helper/src/checks.rs`: `admit_uid` — default-range admit; uid 0 always rejected even with `UID_MIN 0`; uid 65534 rejected (exceeds `UID_MAX`); uid absent from `getpwuid` (stubbed) rejected (privilege-admission §UID Range Admission). GREEN: implement `lookup_user`, `admit_uid`, `UidRejection`, `in_admin_group` (advisory pre-check only). **Also restore the deferred payload:** Phase 4 shipped `HelperError::UidRejected` as a unit variant because `checks.rs` did not exist yet. Now that `UidRejection` exists, widen it to `UidRejected(checks::UidRejection)` so the rejection reason survives to the Phase 8 journald audit record. Exit code 11 must not change.
+- [x] 5.3 RED `checks.rs` `is_sudoer`: exact argv `LANG=C /usr/bin/sudo -n -l -U <user> /bin/sh`, no shell/`PATH`, `PKEXEC_UID` absent from the child env (threat matrix: External command composition, argv leg); probe exit 0 → admitted; probe non-zero even with `sudo`-group membership → rejected (privilege-admission §Existing-Sudoer Probe). GREEN: implement `is_sudoer` via `CommandRunner`.
 
 ## Phase 6: Atomic File Operations and `flock`
 
@@ -105,6 +106,12 @@ Rationale for stacked-to-main: the repository is greenfield (no deployed users),
 - [ ] 6.3 RED `fileops.rs`: rule file externally deleted before `remove_rule` runs → `ENOENT` treated as success/idempotent no-op (sudoers-rule-lifecycle §Rule Removal, "Rule file externally deleted before disable runs"). GREEN: idempotent `unlink` handling.
 
 ## Phase 7: Timer Management and `ops::{enable,disable,status,expire}` Transactions
+
+> **Two enforcement obligations inherited from Phase 5 verification.** Both are guarantees that Phase 5 documents but cannot enforce, because `ops.rs` is their only caller and it does not exist yet.
+>
+> 1. **Sanitize the username before the sudo probe.** `checks::is_sudoer` does NOT sanitize; `nopass_core::template::sanitize_username` is currently called only inside `render_rule`. `ops.rs` MUST sanitize the username it passes to `is_sudoer`. Today an unsanitized value fails closed, because `CommandSpec.args` is a `Vec<String>` with no shell so a hostile value arrives as one literal argv token bound to `-U` rather than as new flags, but nothing enforces it. Add a test pinning the sanitized value in the probe argv.
+>
+> 2. **Source the invocation context from the real environment.** `uid::resolve` takes `pkexec_uid` and `real_uid` as injected parameters, because `std::env::set_var` is unsafe under edition 2024 and this crate forbids unsafe. `ops.rs` MUST read `pkexec_uid` from the live `PKEXEC_UID` variable and `real_uid` from `nix::unistd::getuid()`, the REAL uid and not the effective one, exactly as `uid.rs`'s doc comment prescribes. Verification of this phase must diff the actual call site against that doc comment.
 
 *(Spec: `expiry-policy`, `sudoers-rule-lifecycle`; Design §4, §6)*
 

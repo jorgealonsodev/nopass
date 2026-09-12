@@ -33,18 +33,24 @@ apply_progress:
   phase_2_core_template_header_expiry: settled-passed   # verifier PASS WITH FINDINGS, all fixed
   phase_3_core_paths_state_logindefs_timefmt: settled-passed   # verifier PASS, zero findings
   phase_4_helper_cli_runner_errors_bins: settled-passed   # verifier PASS WITH FINDINGS; 2 real gaps fixed, budget reset authorized
-  phase_5_uid_checks: in_progress
+  phase_5_uid_checks: settled-passed   # verifier PASS WITH FINDINGS; 4 test-honesty fixes applied
   phase_6_fileops_lock: pending
   phase_7_timer_ops: pending
   phase_8_statefile_journal: pending
   phase_9_data_artifacts: pending
   phase_10_container_lane: pending
-tasks_complete: 20/45
-workspace_tests: 98
+tasks_complete: 24/45
+workspace_tests: 126
 delivery:
   work_units_planned: 14   # revised from 13 after Phase 4 overran its forecast
-  deferred:
-    - "1.9 commit Cargo.lock — lands when PR 1 opens; repository still has zero commits"
+  deferred: []
+  git:
+    initial_commit: c306f34
+    note: >
+      The work preceded the git history. Phases 1-4 landed in one initial commit
+      because lib.rs and main.rs had already moved past their phase-1 content and
+      that content was never saved anywhere. The chained work-unit plan applies
+      from phase 5 onward, not retroactively. Maintainer decision.
   open_review_budget_issue:
     unit: "4b — runner.rs"
     lines: 437
@@ -59,3 +65,9 @@ attempt_ledger:
   resets_authorized:
     - "phase 1 — 430/400, accounting artifact of a commitless repo"
     - "phase 4 — 988/700, real lines added by verification-driven security tests"
+    - "phase 5 — 4940/1500, the initial commit charged to an attempt opened against an empty tree"
+  sequencing_rule: >
+    Never create or merge a commit while an sdd-attempt is open. The ledger
+    charges any base that lands during an attempt to that attempt, and it cannot
+    be recomputed afterwards. Correct order per phase: settle the open attempt,
+    then commit, then acquire the next one.

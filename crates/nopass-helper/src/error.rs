@@ -8,11 +8,15 @@
 //! is owned entirely by clap and never reaches this mapping; exit 0 is
 //! `Ok(())`, not a `HelperError` variant.
 //!
-//! `checks`, `lock`, `fileops`, `timer`, and `ops` (Phases 5-7) are the
-//! modules that actually construct these variants; until they land, a
-//! normal (non-test) build never constructs them, hence the blanket
-//! allow below. Remove it once Phase 5 wires `checks::admit_uid` etc.
+//! `lock`, `fileops`, `timer`, and `ops` (Phases 6-7) are the modules that
+//! actually construct most of these variants; until they land, a normal
+//! (non-test) build never constructs them, hence the blanket allow below.
+//! Phase 5 wires `checks::admit_uid`/`checks::is_sudoer`, but neither is
+//! called from `main` yet (that wiring is Phase 7's `ops.rs`), so this
+//! attribute stays until then.
 #![allow(dead_code)]
+
+use crate::checks::UidRejection;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HelperError {
@@ -22,11 +26,11 @@ pub enum HelperError {
     BinaryMissing { name: &'static str },
     #[error("invalid invocation context: {0}")]
     Context(&'static str),
-    /// Target uid failed admission (`checks::admit_uid`, landing in Phase
-    /// 5). The rejection reason is carried for the audit record only and
-    /// does not split the exit code — every cause maps to 11.
+    /// Target uid failed admission (`checks::admit_uid`). The rejection
+    /// reason is carried through for the Phase 8 journald audit record
+    /// and does not split the exit code — every cause maps to 11.
     #[error("target uid rejected")]
-    UidRejected,
+    UidRejected(UidRejection),
     #[error("target user is not a sudoer")]
     NotSudoer,
     #[error("invalid duration: {0}")]
@@ -47,7 +51,7 @@ impl HelperError {
         match self {
             HelperError::Internal(_) | HelperError::BinaryMissing { .. } => 1,
             HelperError::Context(_) => 10,
-            HelperError::UidRejected => 11,
+            HelperError::UidRejected(_) => 11,
             HelperError::NotSudoer => 12,
             HelperError::Duration(_) => 13,
             HelperError::VisudoRejected { .. } => 14,
@@ -74,8 +78,11 @@ mod tests {
     }
 
     #[test]
-    fn uid_rejected_maps_to_exit_11() {
-        assert_eq!(HelperError::UidRejected.exit_code(), 11);
+    fn uid_rejected_maps_to_exit_11_regardless_of_rejection_cause() {
+        assert_eq!(HelperError::UidRejected(UidRejection::Root).exit_code(), 11);
+        assert_eq!(HelperError::UidRejected(UidRejection::Unknown).exit_code(), 11);
+        assert_eq!(HelperError::UidRejected(UidRejection::BelowMin { min: 1000 }).exit_code(), 11);
+        assert_eq!(HelperError::UidRejected(UidRejection::AboveMax { max: 60000 }).exit_code(), 11);
     }
 
     #[test]
@@ -114,7 +121,7 @@ mod tests {
     fn every_failure_cause_maps_to_a_distinct_code() {
         let codes = [
             HelperError::Context("x").exit_code(),
-            HelperError::UidRejected.exit_code(),
+            HelperError::UidRejected(UidRejection::Root).exit_code(),
             HelperError::NotSudoer.exit_code(),
             HelperError::Duration(nopass_core::expiry::DurationError::NotInFuture).exit_code(),
             HelperError::VisudoRejected { stderr: String::new() }.exit_code(),

@@ -7,13 +7,17 @@
 //! (`error`), the `CommandRunner` port (`runner`), and binary resolution
 //! (`bins`), and wires them together here: `Cli::parse()` → `dispatch` →
 //! a stub handler per subcommand that returns `Ok(())` without touching
-//! the system. `dispatch`'s stub handlers are replaced by the real
+//! the system. Phase 5 adds invocation-context uid resolution (`uid`) and
+//! uid/sudoer admission checks (`checks`); neither is wired into
+//! `dispatch` yet — that lands with the real
 //! `ops::{enable,disable,status,expire}` transactions in Phase 7.
 
 mod bins;
+mod checks;
 mod cli;
 mod error;
 mod runner;
+mod uid;
 
 use clap::Parser;
 
