@@ -1,0 +1,605 @@
+diff --git a/crates/nopass/src/event.rs b/crates/nopass/src/event.rs
+index 88b362b..65bfc99 100644
+--- a/crates/nopass/src/event.rs
++++ b/crates/nopass/src/event.rs
+@@ -2,20 +2,21 @@
+ //! alone drains — design.md §2 `event`, §6 "one async task owns every
+ //! piece of mutable state".
+ //!
+-//! This file is deliberately partial. Phase 4 gives `Event` only the two
+-//! variants its own adapters (`watch`, the 60 s tick) and the already-
+-//! existing probe port can produce without pulling in Phase 5's `Action`
+-//! (`outcome.rs`) or Phase 7-9's SNI/D-Bus adapters. The full enum —
+-//! `MenuOpened`, `ToggleRequested`, `ActivateRequested`, `HostAppeared`,
+-//! `HostVanished`, `ActionFinished`, `Quit` — is completed in Phase 10
+-//! once every producer exists (design.md §2 `event` lists the target
+-//! shape in full).
++//! Phase 4 shipped `Event` partially — only the variants its own
++//! adapters (`watch`, the 60 s tick) and the already-existing probe port
++//! could produce without pulling in Phase 5's `Action` (`outcome.rs`) or
++//! Phase 7-9's SNI/D-Bus adapters. Phase 10 completes it: `MenuOpened`,
++//! `ToggleRequested`, `ActivateRequested`, `HostAppeared`, `HostVanished`,
++//! `ActionFinished`, and `Quit` (design.md §2 `event`).
+ 
+ use std::time::Duration;
+ 
+ use futures_lite::{Stream, StreamExt};
+ 
++use crate::outcome::Action;
+ use crate::probe::{Probe, ProbeError};
++use crate::runner::{RunnerError, SpawnOutcome};
++use crate::tray::TrayEvent;
+ 
+ /// The 60 s reconciliation tick (design.md §3.4, §4 "No Periodic Wakeup
+ /// Beyond the 60-Second Reconciliation Tick"). `app::run` (Phase 10) is
+@@ -23,17 +24,50 @@ use crate::probe::{Probe, ProbeError};
+ /// with a much shorter period so the suite never waits a real minute.
+ pub const TICK_INTERVAL_SECS: u64 = 60;
+ 
+-/// What the reactor's adapters hand to `app::run`. Every variant here is
+-/// produced by code that already exists at the end of Phase 4.
+-#[derive(Debug)]
++/// What the reactor's adapters hand to `app::run` (design.md §2 `event`).
++#[derive(Debug, Clone, PartialEq, Eq)]
+ pub enum Event {
+     /// `watch::Watch` observed a debounced change under `<uid>.state`
+     /// (design.md D8).
+     FileChanged,
+     /// One firing of the sole periodic timer this design funds.
+     Tick,
++    /// `ksni::Tray::menu_about_to_show` — the root menu is about to be
++    /// displayed (`Trigger::MenuOpened`, design.md §3.4).
++    MenuOpened,
++    /// Left-click activation or the menu's toggle item (design.md's
++    /// "left-click toggle").
++    ToggleRequested,
++    /// A second instance nudged us via `org.freedesktop.Application.
++    /// Activate` (design.md §6.4).
++    ActivateRequested,
++    /// `org.kde.StatusNotifierWatcher` gained an owner after startup
++    /// (design.md §6.1 step 8).
++    HostAppeared,
++    /// `org.kde.StatusNotifierWatcher` lost its owner.
++    HostVanished,
+     /// A `sudo -kn true` probe completed, successfully or not.
+     ProbeFinished(Result<Probe, ProbeError>),
++    /// A privileged `pkexec` invocation completed, successfully or not
++    /// (design.md §5, §6.2).
++    ActionFinished(Action, Result<SpawnOutcome, RunnerError>),
++    /// The menu's `Quit` item, or `AppInterface`/the SNI item requesting
++    /// an orderly shutdown.
++    Quit,
++}
++
++/// Folds a [`TrayEvent`] (raised by `ksni` menu/activation callbacks,
++/// design.md §7.2) into the full [`Event`] enum — `tray.rs` deliberately
++/// stays independent of this module (see its own `TrayEvent` doc
++/// comment), so the mapping lives here instead.
++impl From<TrayEvent> for Event {
++    fn from(event: TrayEvent) -> Event {
++        match event {
++            TrayEvent::ToggleRequested => Event::ToggleRequested,
++            TrayEvent::MenuOpened => Event::MenuOpened,
++            TrayEvent::Quit => Event::Quit,
++        }
++    }
+ }
+ 
+ /// The production tick source: exactly one [`async_io::Timer::interval`]
+diff --git a/crates/nopass/src/lib.rs b/crates/nopass/src/lib.rs
+index 7d5add4..9ca68ea 100644
+--- a/crates/nopass/src/lib.rs
++++ b/crates/nopass/src/lib.rs
+@@ -30,6 +30,11 @@
+ //! §2 `notifications`, §7.3). Phase 9 adds `instance` (D-Bus name
+ //! ownership, `org.freedesktop.Application`, and the activation nudge,
+ //! §2 `instance`, §6.4, D3).
++//!
++//! Phase 10 adds `preflight` (the startup decision table and the polkit
++//! readiness ladder, §0 G3, §8) and `app` (the single-owner reconciliation
++//! loop, §2 `app`, §6), completes `event`'s `Event` enum, and wires
++//! `main.rs`'s real startup sequence (§6.1).
+ 
+ pub mod state;
+ pub mod runner;
+@@ -43,3 +48,5 @@ pub mod format;
+ pub mod tray;
+ pub mod notifications;
+ pub mod instance;
++pub mod preflight;
++pub mod app;
+diff --git a/crates/nopass/src/main.rs b/crates/nopass/src/main.rs
+index 433472b..49932c7 100644
+--- a/crates/nopass/src/main.rs
++++ b/crates/nopass/src/main.rs
+@@ -4,16 +4,344 @@
+ //! `nopass` library (`src/lib.rs`), which owns every module — see
+ //! `lib.rs` for why the library exists.
+ //!
+-//! Phase 1 ships only this stub: `boot()` is a placeholder that will be
+-//! replaced by the real startup sequence (session-bus connection,
+-//! preflight, SNI registration, inotify watch, 60 s tick — design.md §6.1
+-//! steps 1–11) in Phase 10, task 10.7.
++//! `boot()` is the real startup sequence design.md §6.1 describes: it
++//! connects the session bus, decides single-instance ownership, runs the
++//! preflight, spawns the tray with `Unknown` rendered before any probe
++//! (the < 1 s NFR budget), wires every adapter into one shared
++//! [`nopass::event::Event`] channel, and finally drives
++//! [`nopass::app::run`] to completion. Every non-zero exit code
++//! (design.md §8) is decided here, before an `App` value is ever built —
++//! `app::run` itself always returns `0`.
++
++use std::path::PathBuf;
++use std::sync::Arc;
++
++use futures_lite::StreamExt;
++use zbus::Connection;
++
++use nopass::app::{self, App};
++use nopass::instance::{self, Acquisition, AppInterface, OBJECT_PATH};
++use nopass::invoke::Locale;
++use nopass::notifications::{FreedesktopNotifier, NotifyPort};
++use nopass::preflight::{self, EnumerateOutcome, PolicyFileCheck, Preflight, ServicePresence, StartDecision};
++use nopass::reconcile::TrayState;
++use nopass::runner::SystemRunner;
++use nopass::tray::{KsniTray, TrayPort, ViewModel};
++use nopass::watch::Watch;
++
++/// `org.kde.StatusNotifierWatcher` — the tray-host protocol; used both
++/// for the KDE and the GNOME/AppIndicator-extension name (design.md §6.1
++/// step 5).
++const SNI_WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
++const NOTIFICATIONS_NAME: &str = "org.freedesktop.Notifications";
++const POLKIT_AUTHORITY_NAME: &str = "org.freedesktop.PolicyKit1";
++const POLKIT_ACTION_ID: &str = "com.enfoquestic.nopass.manage";
++const POLKIT_POLICY_FILE: &str = "/usr/share/polkit-1/actions/com.enfoquestic.nopass.policy";
+ 
+ fn main() {
+     std::process::exit(boot())
+ }
+ 
+-/// Phase 1 placeholder for the real startup sequence built in Phase 10.
++/// The real startup sequence (design.md §6.1 steps 1-11). Synchronous by
++/// signature — `main()` wants a plain exit code — but everything inside
++/// runs on one `futures_lite::future::block_on`, which is also the
++/// process thread that ultimately becomes `app::run`'s own reactor task
++/// (see `app.rs`'s module doc for why that is safe).
+ fn boot() -> i32 {
+-    0
++    futures_lite::future::block_on(boot_async())
++}
++
++async fn boot_async() -> i32 {
++    let uid = nix::unistd::getuid().as_raw();
++    let user = resolve_username(uid);
++    let layout = nopass_core::paths::Layout::system();
++    let state_path = layout.state_path(uid);
++    let run_dir = state_path.parent().expect("state_path always has a parent directory").to_path_buf();
++
++    // Step 2: connect the session bus.
++    let session_conn = match Connection::session().await {
++        Ok(c) => c,
++        Err(e) => {
++            eprintln!("nopass: could not connect to the session bus: {e}");
++            return 3;
++        }
++    };
++
++    // Step 3/4: single-instance ownership (design.md §6.4, D3). A second
++    // instance nudges the first and always exits 0, regardless of what
++    // the nudge did (RF-10).
++    let acquisition = match instance::acquire(&session_conn).await {
++        Ok(a) => a,
++        Err(e) => {
++            eprintln!("nopass: could not claim {}: {e}", instance::SERVICE_NAME);
++            return 5;
++        }
++    };
++    if acquisition == Acquisition::AlreadyRunning {
++        instance::nudge(&session_conn).await;
++        return 0;
++    }
++
++    // Step 5: preflight — session bus is already known Present here; a
++    // connection failure above already returned before this point.
++    let sni_host = name_has_owner(&session_conn, SNI_WATCHER_NAME).await;
++    let notifications_present = name_has_owner(&session_conn, NOTIFICATIONS_NAME).await;
++    let polkit = probe_polkit_readiness().await;
++    let preflight = Preflight { session_bus: ServicePresence::Present, sni_host, notifications: notifications_present, polkit };
++
++    // Step 6: decide.
++    let mode = match preflight::decide(&preflight) {
++        StartDecision::Run(mode) => mode,
++        StartDecision::Refuse(reason) => {
++            eprintln!("nopass: refusing to start: {reason:?}");
++            return 4;
++        }
++    };
++
++    // Step 7: render Unknown and register the SNI item BEFORE any probe
++    // — the < 1 s startup budget (design.md §6.1).
++    let notify: Arc<dyn NotifyPort + Send + Sync> = Arc::new(FreedesktopNotifier::new());
++    let initial = ViewModel::from_state(&user, &TrayState::Unknown, app::now());
++    let (ksni_tray, tray_events) = match KsniTray::spawn(initial).await {
++        Ok(t) => t,
++        Err(e) => {
++            eprintln!("nopass: could not register the tray item: {e}");
++            return 1;
++        }
++    };
++    let tray: Arc<dyn TrayPort + Send + Sync> = Arc::new(ksni_tray);
++
++    // `AppInterface` is served once tray/notify exist — a benign,
++    // deliberate reordering relative to design.md's step 3 (see
++    // `app.rs`'s module doc and this phase's report for the rationale):
++    // nothing can address us via the well-known name before step 3/4
++    // above already succeeded, so no real second instance can observe
++    // the gap.
++    let app_interface = AppInterface::new(Arc::clone(&tray), Arc::clone(&notify), user.clone());
++    if let Err(e) = session_conn.object_server().at(OBJECT_PATH, app_interface).await {
++        eprintln!("nopass: could not serve {OBJECT_PATH}: {e} (second-instance nudges will be a no-op)");
++    }
++
++    let (events_tx, events_rx) = async_channel::unbounded();
++
++    // Step 8: subscribe NameOwnerChanged for the SNI watcher (late host,
++    // design.md §6.1 step 8).
++    spawn_host_watch(&session_conn, events_tx.clone()).await;
++
++    // Step 9: start the inotify watch on the run directory (missing ⇒
++    // reconciliation-only fallback, retried each tick — design D8).
++    match Watch::start(&run_dir, uid, events_tx.clone()) {
++        Ok(watch) => std::mem::forget(watch), // kept alive for the process's lifetime
++        Err(e) => eprintln!("nopass: could not watch {}: {e:?} (falling back to the 60s tick alone)", run_dir.display()),
++    }
++
++    // Step 10: the sole periodic timer (design.md §3.4, event.rs's own
++    // structural test).
++    spawn_tick_forwarder(events_tx.clone());
++
++    // Bridge the ksni menu/activation channel into the shared Event
++    // channel (design.md §6 "adapters own no state and only send
++    // Events").
++    spawn_tray_event_forwarder(tray_events, events_tx.clone());
++
++    let pkexec = resolve_first_absolute(&["/usr/bin/pkexec", "/bin/pkexec"]);
++    let sudo = resolve_first_absolute(&["/usr/bin/sudo", "/bin/sudo"]);
++
++    let app = App::new(
++        user,
++        state_path,
++        mode,
++        tray,
++        notify,
++        Arc::new(SystemRunner),
++        pkexec,
++        sudo,
++        Locale::from_env(),
++        events_tx,
++        events_rx,
++    );
++
++    // Step 11 (reading the state file and spawning the first probe) is
++    // `app::run`'s own `Trigger::Startup` reconciliation.
++    app::run(app).await
++}
++
++/// `getpwuid` via `nix::unistd::User`, falling back to the bare uid as a
++/// string when no passwd entry exists — a degraded but still-honest
++/// display value, never a fabricated name.
++fn resolve_username(uid: u32) -> String {
++    match nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)) {
++        Ok(Some(user)) => user.name,
++        _ => uid.to_string(),
++    }
++}
++
++/// The ordered-absolute-candidate discipline (design.md §4.3): first
++/// existing candidate wins; falling back to the first candidate when
++/// none exist lets `SystemRunner` produce a natural `RunnerError::Spawn`
++/// (⇒ `OutcomeKind::SpawnFailed`) the first time it is actually needed,
++/// rather than refusing to start over a binary the user may install
++/// later.
++fn resolve_first_absolute(candidates: &[&str]) -> PathBuf {
++    for candidate in candidates {
++        let path = PathBuf::from(candidate);
++        if std::fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false) {
++            return path;
++        }
++    }
++    PathBuf::from(candidates[0])
++}
++
++async fn name_has_owner(conn: &Connection, name: &str) -> ServicePresence {
++    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else {
++        return ServicePresence::Absent;
++    };
++    match dbus.name_has_owner(name.try_into().expect("well-known name literal is always valid")).await {
++        Ok(true) => ServicePresence::Present,
++        _ => ServicePresence::Absent,
++    }
++}
++
++/// Subscribes to `NameOwnerChanged` for [`SNI_WATCHER_NAME`] and forwards
++/// `Event::HostAppeared`/`HostVanished` into `tx` for as long as the
++/// process runs (design.md §6.1 step 8). A subscription failure is
++/// logged and otherwise harmless — the tray already rendered `Unknown`
++/// and registered per step 7; a late host will not be detected without
++/// this, but nothing else in the app depends on it.
++async fn spawn_host_watch(conn: &Connection, tx: async_channel::Sender<nopass::event::Event>) {
++    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else {
++        eprintln!("nopass: could not build a DBus proxy to watch for a late tray host");
++        return;
++    };
++    let Ok(mut changes) = dbus.receive_name_owner_changed().await else {
++        eprintln!("nopass: could not subscribe to NameOwnerChanged");
++        return;
++    };
++    std::thread::spawn(move || {
++        futures_lite::future::block_on(async {
++            while let Some(signal) = changes.next().await {
++                let Ok(args) = signal.args() else { continue };
++                if args.name.as_str() != SNI_WATCHER_NAME {
++                    continue;
++                }
++                let event = if args.new_owner.as_ref().is_some() {
++                    nopass::event::Event::HostAppeared
++                } else {
++                    nopass::event::Event::HostVanished
++                };
++                if tx.send(event).await.is_err() {
++                    break;
++                }
++            }
++        });
++    });
++}
++
++/// Forwards `nopass::event::tick()` into `tx` from a dedicated thread —
++/// `event.rs`'s own structural test still holds, since this calls the
++/// crate's one `Timer::interval` call site rather than writing a second
++/// one.
++fn spawn_tick_forwarder(tx: async_channel::Sender<nopass::event::Event>) {
++    std::thread::spawn(move || {
++        futures_lite::future::block_on(async {
++            let mut ticks = nopass::event::tick();
++            while let Some(event) = ticks.next().await {
++                if tx.send(event).await.is_err() {
++                    break;
++                }
++            }
++        });
++    });
++}
++
++/// Bridges `ksni`'s own `TrayEvent` channel into the shared `Event`
++/// channel (design.md §6 "adapters own no state and only send Events").
++fn spawn_tray_event_forwarder(
++    events: async_channel::Receiver<nopass::tray::TrayEvent>,
++    tx: async_channel::Sender<nopass::event::Event>,
++) {
++    std::thread::spawn(move || {
++        futures_lite::future::block_on(async {
++            while let Ok(event) = events.recv().await {
++                if tx.send(event.into()).await.is_err() {
++                    break;
++                }
++            }
++        });
++    });
++}
++
++/// The polkit readiness ladder (design.md §0 G3), wired against a real
++/// system bus connection. Never gates startup — `preflight::decide`
++/// never reads `polkit` at all — and its result is currently carried by
++/// `Preflight` for completeness only; see this phase's report for the
++/// open gap (nothing yet consumes `PolkitReadiness::ActionMissing` to
++/// disable the toggle, since no task in this phase specifies where that
++/// wiring belongs).
++async fn probe_polkit_readiness() -> nopass::preflight::PolkitReadiness {
++    let Ok(system_conn) = Connection::system().await else {
++        return nopass::preflight::PolkitReadiness::Indeterminate("system_bus_unreachable");
++    };
++
++    let Ok(dbus) = zbus::fdo::DBusProxy::new(&system_conn).await else {
++        return nopass::preflight::PolkitReadiness::Indeterminate("dbus_proxy_unavailable");
++    };
++    let has_owner = dbus
++        .name_has_owner(POLKIT_AUTHORITY_NAME.try_into().expect("well-known name literal is always valid"))
++        .await
++        .unwrap_or(false);
++    if !has_owner {
++        return preflight::polkit_ladder(false, EnumerateOutcome::ErrorOrTimeout, PolicyFileCheck::Unknown);
++    }
++
++    let enumerate = futures_lite::future::or(
++        async {
++            let proxy = PolicyKitAuthorityProxy::new(&system_conn).await.ok()?;
++            proxy.enumerate_actions("").await.ok()
++        },
++        async {
++            async_io::Timer::after(std::time::Duration::from_secs(2)).await;
++            None
++        },
++    )
++    .await;
++
++    let enumerate_outcome = match enumerate {
++        Some(actions) => {
++            if actions.iter().any(|a| a.0 == POLKIT_ACTION_ID) {
++                EnumerateOutcome::ActionFound
++            } else {
++                EnumerateOutcome::ActionAbsent
++            }
++        }
++        None => EnumerateOutcome::ErrorOrTimeout,
++    };
++
++    let policy_file = match std::fs::metadata(POLKIT_POLICY_FILE) {
++        Ok(m) if m.is_file() => PolicyFileCheck::Present,
++        Ok(_) => PolicyFileCheck::Absent,
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => PolicyFileCheck::Absent,
++        Err(_) => PolicyFileCheck::Unknown,
++    };
++
++    preflight::polkit_ladder(true, enumerate_outcome, policy_file)
++}
++
++/// One polkit action description, as `EnumerateActions` returns it —
++/// `(action_id, description, message, vendor_name, vendor_url,
++/// implicit_any, implicit_inactive, implicit_active, annotations)`,
++/// following polkit's own D-Bus introspection (`sssssuuua{ss}`).
++type PolkitActionDescription = (String, String, String, String, String, u32, u32, u32, std::collections::HashMap<String, String>);
++
++/// Client proxy for `org.freedesktop.PolicyKit1.Authority` — used only
++/// for the best-effort `EnumerateActions` step of the polkit ladder
++/// (design.md §0 G3, step 2).
++#[zbus::proxy(
++    interface = "org.freedesktop.PolicyKit1.Authority",
++    default_service = "org.freedesktop.PolicyKit1",
++    default_path = "/org/freedesktop/PolicyKit1/Authority"
++)]
++trait PolicyKitAuthority {
++    #[zbus(name = "EnumerateActions")]
++    fn enumerate_actions(&self, locale: &str) -> zbus::Result<Vec<PolkitActionDescription>>;
+ }
+diff --git a/crates/nopass/tests/dbus_session.rs b/crates/nopass/tests/dbus_session.rs
+index b3e7415..0d0cfbb 100644
+--- a/crates/nopass/tests/dbus_session.rs
++++ b/crates/nopass/tests/dbus_session.rs
+@@ -22,6 +22,9 @@
+ //! - `menu_labels_and_sensitivity_match_the_view_model_and_quit_raises_its_event` (7.5)
+ //! - `ticks_keep_firing_on_schedule_while_a_live_tray_holds_the_bus` (7.6)
+ //! - every `notifications_*`/`single_instance_*` test below (Phase 8/9)
++//! - every `real_binary_*` test below (Phase 10, tasks 10.5-10.6): each
++//!   spawns the actual compiled `nopass` binary as a subprocess against
++//!   this file's shared bus
+ 
+ use std::collections::HashMap;
+ use std::sync::{Arc, Mutex};
+@@ -826,3 +829,86 @@ fn ten_rapid_activations_produce_exactly_one_notification_and_zero_pkexec_spawns
+         release_service_name(&conn1).await;
+     });
+ }
++
++// =====================================================================
++// Phase 10 — Startup preflight, degraded modes, main wiring (tasks.md
++// 10.5-10.6; design.md §6.1, §8; spec `tray-presence` refusal rows)
++// =====================================================================
++
++fn nopass_binary() -> std::process::Command {
++    std::process::Command::new(env!("CARGO_BIN_EXE_nopass"))
++}
++
++/// Task 10.6 (the cargo-test half) + task 10.5's "no session bus at all"
++/// row: with `DBUS_SESSION_BUS_ADDRESS` unset and unresolvable, the real
++/// binary must fail fast with a message on stderr and a non-zero exit —
++/// exactly exit 3 (design.md §8).
++#[test]
++fn real_binary_with_no_session_bus_address_exits_3_with_a_stderr_message() {
++    skip_unless_lane_b!("real_binary_with_no_session_bus_address_exits_3_with_a_stderr_message");
++    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++
++    let mut cmd = nopass_binary();
++    cmd.env_clear();
++    // Deliberately no DBUS_SESSION_BUS_ADDRESS, no DBUS_STARTER_ADDRESS,
++    // and no display-derived fallback the underlying bus library might
++    // otherwise try — an empty environment cannot resolve a session bus.
++    let output = cmd.output().expect("spawn the real nopass binary");
++
++    assert_eq!(output.status.code(), Some(3), "no session bus at all must exit exactly 3: {output:?}");
++    assert!(!output.stderr.is_empty(), "a session-bus connection failure must be reported on stderr");
++}
++
++/// Task 10.5: with a real session bus present but neither
++/// `org.kde.StatusNotifierWatcher` nor `org.freedesktop.Notifications`
++/// owned by anyone, the real binary must refuse with exit 4 — distinct
++/// from exit 3 and from the SNI-host-only degraded case below, which
++/// does not exit at all (spec `tray-presence` "Hard Refusal With No
++/// User-Visible Channel").
++#[test]
++fn real_binary_with_neither_host_nor_notifications_exits_4() {
++    skip_unless_lane_b!("real_binary_with_neither_host_nor_notifications_exits_4");
++    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++
++    // Deliberately no fake watcher, no fake notifications daemon —
++    // `DBUS_SESSION_BUS_ADDRESS` resolves (dbus-run-session provides a
++    // real bus), but no one owns either well-known name.
++    let output = nopass_binary().output().expect("spawn the real nopass binary");
++
++    assert_eq!(
++        output.status.code(),
++        Some(4),
++        "a live session bus with no possible user-visible channel must exit exactly 4: {output:?}"
++    );
++}
++
++/// Task 10.5: the SNI-host-only degraded case — `org.kde.
++/// StatusNotifierWatcher` present, `org.freedesktop.Notifications`
++/// absent — must NOT exit at all (design.md §8's `Run(NoNotifications)`
++/// row), unlike the "neither present" case above which exits 4
++/// immediately. The process is killed once this is observed; nothing
++/// here asserts on its rendering (Lane B proves protocol, not looks —
++/// design.md §9).
++#[test]
++fn real_binary_with_only_the_sni_host_present_keeps_running_degraded() {
++    skip_unless_lane_b!("real_binary_with_only_the_sni_host_present_keeps_running_degraded");
++    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++
++    futures_lite::future::block_on(async {
++        let (_watcher_conn, _registered) = spawn_fake_watcher().await;
++
++        let mut child = nopass_binary().spawn().expect("spawn the real nopass binary");
++
++        // Give the process time to run its full startup sequence (well
++        // above the <1s NFR budget) and confirm it is still alive rather
++        // than having exited (degraded, not refused).
++        async_io::Timer::after(Duration::from_secs(2)).await;
++        match child.try_wait().expect("try_wait must not itself fail") {
++            None => {}
++            Some(status) => panic!("a present SNI host with no notification service must not exit; got {status:?}"),
++        }
++
++        let _ = child.kill();
++        let _ = child.wait();
++    });
++}
+diff --git a/openspec/changes/m2-tray/tasks.md b/openspec/changes/m2-tray/tasks.md
+index 7cafd48..3f9cc82 100644
+--- a/openspec/changes/m2-tray/tasks.md
++++ b/openspec/changes/m2-tray/tasks.md
+@@ -382,28 +382,28 @@ of Scope section defers it to M4 packaging alongside `.deb`/`.rpm`/AUR. Nothing
+ *(Design §2 `preflight`/`app`, §6.1, §8, D4; Spec: tray-presence (refusal rows), degraded rows of
+ tray-state-sync/tray-notifications; Proposal slice 10)*
+ 
+-- [ ] 10.1 Create `crates/nopass/src/preflight.rs` — `struct Preflight`, `enum ServicePresence`,
++- [x] 10.1 Create `crates/nopass/src/preflight.rs` — `struct Preflight`, `enum ServicePresence`,
+       `enum PolkitReadiness { Ready, ActionMissing, Indeterminate }`, `enum StartDecision`, `enum
+       Mode`, `enum Refusal`, pure `decide(p)` (design §0 G3, §8).
+-- [ ] 10.2 RED (Lane A) `preflight.rs`: the 4-row `sni_host`×`notifications` decision table
++- [x] 10.2 RED (Lane A) `preflight.rs`: the 4-row `sni_host`×`notifications` decision table
+       (`Full`/`NoTrayHost`/`NoNotifications`/`Refuse(NoUserVisibleChannel)`) plus `NoSessionBus`;
+       `Indeterminate` polkit never changes the decision (tray-presence "Degraded Start When No SNI
+       Host Is Present", "Hard Refusal With No User-Visible Channel"; proposal D4). GREEN:
+       implement `decide`.
+-- [ ] 10.3 RED (Lane A): polkit ladder — `NameHasOwner` absent ⇒ `ActionMissing(no_authority)`;
++- [x] 10.3 RED (Lane A): polkit ladder — `NameHasOwner` absent ⇒ `ActionMissing(no_authority)`;
+       `EnumerateActions` present/absent/error-or-timeout falling back to the policy-file stat;
+       unresolved ⇒ `Indeterminate` (design §0 G3 — already confirmed PASS via `pkaction` by the
+       orchestrator; this pins the ladder's logic against fakes, not a real bus). GREEN: implement
+       the polkit ladder.
+-- [ ] 10.4 Create `crates/nopass/src/app.rs` — `struct App` (single owner of all mutable state),
++- [x] 10.4 Create `crates/nopass/src/app.rs` — `struct App` (single owner of all mutable state),
+       `async fn run(App) -> i32`; finish `crates/nopass/src/event.rs`'s `Event` enum (design §2
+       `app`/`event`, §6).
+-- [ ] 10.5 RED (Lane B, `dbus-run-session`) `dbus_session.rs`: no session bus at all ⇒ exit 3;
++- [x] 10.5 RED (Lane B, `dbus-run-session`) `dbus_session.rs`: no session bus at all ⇒ exit 3;
+       neither host nor notification service present ⇒ exit 4, distinct from the SNI-host-only
+       degraded case which does not exit (tray-presence "No session bus at all", "Neither host nor
+       notification service reachable"). GREEN: implement the exit-code table (0/1/3/4/5, design
+       §8).
+-- [ ] 10.6 RED (Lane A): startup binary spawn with `DBUS_SESSION_BUS_ADDRESS` unset and
++- [x] 10.6 RED (Lane A): startup binary spawn with `DBUS_SESSION_BUS_ADDRESS` unset and
+       unresolvable ⇒ stderr + non-zero exit (tray-presence "No session bus at all", the
+       cargo-test half). GREEN: covered by 10.5's exit-3 path exercised as a real subprocess.
+ - [ ] 10.7 Wire `crates/nopass/src/main.rs` — `boot()`: `getuid`, `Layout::system()`, connect
