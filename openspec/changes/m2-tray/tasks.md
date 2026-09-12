@@ -317,28 +317,28 @@ of Scope section defers it to M4 packaging alongside `.deb`/`.rpm`/AUR. Nothing 
 
 *(Design §2 `notifications`, §7.3; Spec: tray-notifications (all); Proposal slice 8)*
 
-- [ ] 8.1 Create `crates/nopass/src/notifications.rs` — `trait NotifyPort { post }`, `enum
+- [x] 8.1 Create `crates/nopass/src/notifications.rs` — `trait NotifyPort { post }`, `enum
       Category { Action, Expiry, Environment }`, `struct FreedesktopNotifier` — the only
       `notify-rust`-aware module; one retained `NotificationHandle` per `Category`, updated in
       place; `Urgency::Normal` always (design §7.3).
-- [ ] 8.2 RED (Lane B, `dbus-run-session`) `dbus_session.rs`: successful enable/disable emits one
+- [x] 8.2 RED (Lane B, `dbus-run-session`) `dbus_session.rs`: successful enable/disable emits one
       confirmation notification; a detected external expiry (active-temporary ⇒ inactive with no
       pending tray action) emits its own notification (tray-notifications "Success, Failure, and
       Expiry Notifications"). GREEN: wire `NotifyPort::post` into the app loop's outcome/merge
       results.
-- [ ] 8.3 RED (Lane B) `dbus_session.rs`: exit-12 (not a sudoer) and exit-14 (visudo rejected)
+- [x] 8.3 RED (Lane B) `dbus_session.rs`: exit-12 (not a sudoer) and exit-14 (visudo rejected)
       payloads captured and asserted unequal (tray-notifications "Notification Body Is Distinct
       Per Outcome"). GREEN: covered by `format::outcome_text` (5.5) feeding `FreedesktopNotifier`.
-- [ ] 8.4 RED (Lane B) `dbus_session.rs`: no owner for `org.freedesktop.Notifications` ⇒ icon/
+- [x] 8.4 RED (Lane B) `dbus_session.rs`: no owner for `org.freedesktop.Notifications` ⇒ icon/
       tooltip still update, a message is written to stderr, no notification call retried in a
       loop (tray-notifications "Degraded Mode When No Notification Service Is Present"). GREEN:
       implement the degraded-notify path.
-- [ ] 8.5 RED (Lane B) `dbus_session.rs`: threat matrix "Untrusted text reaching a user surface"
+- [x] 8.5 RED (Lane B) `dbus_session.rs`: threat matrix "Untrusted text reaching a user surface"
       — a `VisudoRejected` outcome carrying attacker-shaped stderr renders only the constant
       `format` text, never the stderr; a username containing markup/control characters renders
       literally, length-capped, no markup (design threat matrix row 5). GREEN: assert
       `notifications.rs` composes bodies only from `format::outcome_text` plus username/countdown.
-- [ ] 8.6 RED (Lane B): threat matrix "Privilege-request initiation over D-Bus" (notification
+- [x] 8.6 RED (Lane B): threat matrix "Privilege-request initiation over D-Bus" (notification
       leg) — a hostile fake `org.freedesktop.Notifications` publishing garbage never changes
       `TrayState` (design threat matrix row 4). GREEN: structural — `NotifyPort` is write-only
       from the tray's perspective.
@@ -349,28 +349,28 @@ of Scope section defers it to M4 packaging alongside `.deb`/`.rpm`/AUR. Nothing 
 
 *(Design §2 `instance`, §6.4, D3; Spec: tray-single-instance (all); Proposal slice 9)*
 
-- [ ] 9.1 Create `crates/nopass/src/instance.rs` — `acquire(conn)`, `enum Acquisition { Owner,
+- [x] 9.1 Create `crates/nopass/src/instance.rs` — `acquire(conn)`, `enum Acquisition { Owner,
       AlreadyRunning }`, `nudge(conn)` (bounded, infallible by design), `struct AppInterface`
       serving `org.freedesktop.Application` at `/com/enfoquestic/nopass` (design §2 `instance`,
       §6.4).
-- [ ] 9.2 RED (Lane A): `request_name` failing with an error other than `NameTaken` (fake
+- [x] 9.2 RED (Lane A): `request_name` failing with an error other than `NameTaken` (fake
       connection port) ⇒ stderr + exit non-zero, never the RF-10 exit-0 path (tray-single-instance
       "Non-NameTaken request_name Errors Are a Real Fault"). GREEN: implement the non-`NameTaken`
       branch of `acquire`.
-- [ ] 9.3 RED (Lane B, `dbus-run-session`) `dbus_session.rs`: no existing owner ⇒ first instance
+- [x] 9.3 RED (Lane B, `dbus-run-session`) `dbus_session.rs`: no existing owner ⇒ first instance
       becomes owner; a second connection on the same private bus ⇒ `NameTaken`, second process
       exits 0, no second SNI item registered (tray-single-instance "First instance claims the
       name", "Second instance exits 0 without a second icon"). GREEN: implement
       `Acquisition::Owner`/`AlreadyRunning` dispatch.
-- [ ] 9.4 RED (Lane B) `dbus_session.rs`: on `NameTaken`, the second instance calls `Activate` on
+- [x] 9.4 RED (Lane B) `dbus_session.rs`: on `NameTaken`, the second instance calls `Activate` on
       the first within a bounded timeout then exits 0 regardless of success/failure/timeout (fake
       owner that never replies) (tray-single-instance "Second instance nudges the first before
       exiting", "A failed or timed-out nudge still exits 0"). GREEN: implement `nudge`.
-- [ ] 9.5 RED (Lane B) `dbus_session.rs`: the first instance's `Activate` handler re-asserts SNI
+- [x] 9.5 RED (Lane B) `dbus_session.rs`: the first instance's `Activate` handler re-asserts SNI
       registration and emits exactly one status notification (tray-single-instance "The first
       instance reacts to a received nudge"). GREEN: wire `AppInterface::activate` to
       `TrayPort::reassert` + `NotifyPort::post(Category::Environment, ...)`.
-- [ ] 9.6 RED (Lane B) `dbus_session.rs`: threat matrix "Privilege-request initiation over D-Bus"
+- [x] 9.6 RED (Lane B) `dbus_session.rs`: threat matrix "Privilege-request initiation over D-Bus"
       — ten `Activate` calls in one second produce exactly one notification and zero `pkexec`
       spawns (design threat matrix row 4; nudge rate limit "at most one nudge per 5 s"). GREEN:
       implement the rate limiter in `AppInterface::activate`.

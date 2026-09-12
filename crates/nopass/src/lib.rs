@@ -25,6 +25,11 @@
 //! Phase 6 adds `format` (icon-name resolution, design.md §7.1). Phase 7
 //! completes `format` (countdown/tooltip/menu-label rendering, §7.2) and
 //! adds `tray` (the only `ksni`-aware module, §2 `tray`).
+//!
+//! Phase 8 adds `notifications` (the only `notify-rust`-aware module,
+//! §2 `notifications`, §7.3). Phase 9 adds `instance` (D-Bus name
+//! ownership, `org.freedesktop.Application`, and the activation nudge,
+//! §2 `instance`, §6.4, D3).
 
 pub mod state;
 pub mod runner;
@@ -36,3 +41,5 @@ pub mod outcome;
 pub mod invoke;
 pub mod format;
 pub mod tray;
+pub mod notifications;
+pub mod instance;
