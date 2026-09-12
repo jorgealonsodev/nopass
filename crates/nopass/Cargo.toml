@@ -1,0 +1,22 @@
+[package]
+name = "nopass"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nopass-core = { workspace = true }
+nix = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ksni = { workspace = true }
+zbus = { workspace = true }
+notify-rust = { workspace = true }
+notify = { workspace = true }
+async-io = { workspace = true }
+async-channel = { workspace = true }
+futures-lite = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -14,8 +14,8 @@ phases:
   proposal: done
   specs: done
   design: done   # 3 unexecuted gates run by the orchestrator, all pass
-  tasks: in_progress
-  apply: pending
+  tasks: done
+  apply: in_progress
   verify: pending
   archive: pending
 engram_topics:
@@ -86,7 +86,20 @@ attempt_ledger:
         amended. The true diagnosis: the M1 helper's TimerFailed rolled_back flag
         now reports what the unlink actually did instead of hardcoding true; 259
         tests pass and all three gates exit 0. Trust this field over the ledger.
-  default_max_changed_lines: 2500   # carried over from M1; forecasts there never counted verification-driven test lines
+  default_max_changed_lines: 2500   # carried over from M1
+  ceiling_is_per_attempt_not_per_change: >
+    The proposal, the design and the tasks phase each flagged the 2750-line
+    forecast total as exceeding this 2500 ceiling. It does not, and no increase
+    is needed. The ceiling applies to one attempt, and one attempt is acquired
+    per phase against the tree as committed after the previous phase, so each
+    attempt only ever counts its own phase's diff. M1's own ledger shows this
+    directly: its eight phases recorded 430, 501, 481, 988, 4940, 997, 1406 and
+    1614 lines individually, never a running total. The 2750 figure is the sum
+    across eleven phases, which nothing ever measures. The largest single M2
+    slice is forecast at 370 lines. Raise the ceiling only if one phase actually
+    approaches it, and say so when you do.
+    (The 4940 outlier was an orchestrator error: a commit created while that
+    attempt was open, so the whole initial commit was charged to it.)
 ledger_probe_rule: >
   Never use a throwaway settle to discover the untracked-inventory digest. It is
   only harmless when it happens to fail on the declaration check; when there is

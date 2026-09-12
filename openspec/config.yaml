@@ -3,11 +3,12 @@ schema: spec-driven
 context: |
   Project: nopass — Linux system-tray utility that grants/revokes passwordless
   sudo (NOPASSWD) for the current session's user via a privileged helper.
-  Planned stack: Rust workspace (edition 2024, MSRV 1.85+), 3 crates:
-  nopass-core (shared logic), nopass-helper (privileged binary: nix, clap,
-  tracing-journald), nopass (tray binary: ksni, notify-rust, zbus, tokio,
-  notify). Privilege escalation via polkit/pkexec. Timers via systemd-run.
-  No source code exists yet — only docs/PRD_NoPass_Linux.md (v1.1, Spanish).
+  Stack: Rust workspace (edition 2024, MSRV 1.85+), 3 crates: nopass-core
+  (shared logic), nopass-helper (privileged binary: nix, clap,
+  tracing-journald), nopass (tray binary: ksni, notify-rust, zbus, notify —
+  single `async-io` reactor, no tokio anywhere in the tree per m2-tray
+  design.md D1; enforced by scripts/assert-single-reactor.sh). Privilege
+  escalation via polkit/pkexec. Timers via systemd-run.
 
 strict_tdd: true
 
@@ -39,7 +40,13 @@ testing:
       note: "Privileged binary. Unit tests via cargo test; integration tests planned in containers (Debian/Fedora) per PRD 7.2."
     - path: "crates/nopass"
       stack: rust
-      note: "Tray binary (ksni + zbus + tokio + notify)."
+      note: >
+        Tray binary (ksni + zbus + notify-rust + notify), single async-io
+        reactor, zero tokio (m2-tray design.md D1). Lane A is
+        `cargo test --workspace`, unprivileged, no bus, no desktop; Lane B
+        is headless `dbus-run-session` (`NOPASS_DBUS_TESTS=1`); Lane C is a
+        manual real-desktop session recorded in the verify report.
+      verify_command: "scripts/assert-single-reactor.sh"
   next_step: >
     Done — strict_tdd promoted to true in Phase 1 of m1-core-helper.
 
@@ -63,11 +70,15 @@ rules:
       - Follow Clean/Hexagonal boundaries: nopass-core has no UI or system dependencies
       - Helper crate MUST use #![forbid(unsafe_code)] and only fixed clap subcommands
       - Never write directly to /etc/sudoers; always via temp file + visudo -cf + atomic rename
+      - "nopass (tray) MUST stay on a single async-io reactor: no tokio feature anywhere in the tree, and no dbus/glib/gtk. Every phase after Phase 1 of m2-tray MUST re-run scripts/assert-single-reactor.sh before adding adapter code that touches zbus/ksni/notify-rust/notify (m2-tray design.md D1, G1)."
     tdd: true
     test_command: "cargo test --workspace"
   verify:
     test_command: "cargo test --workspace"
     build_command: "cargo build --release"
+    lint_command: "cargo clippy --workspace --all-targets -- -D warnings"
+    gate_commands:
+      - "scripts/assert-single-reactor.sh"
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas
