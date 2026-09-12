@@ -78,7 +78,7 @@ Before creating a new expiry timer for a uid, the system MUST stop any existing 
 - THEN the rule file is unlinked, the helper exits 17, and no permanent grant is left behind
 - Testable via: `cargo test` (rollback call sequence) and root-only container test (real unlink)
 
-#### Scenario: Permanent and until-reboot enables never touch the timer
+#### Scenario: Permanent and until-reboot enables schedule no timer but still clear a stale one
 - GIVEN `enable` with no flags or with `--until-reboot`
 - WHEN it runs
 - THEN `systemd-run` is never invoked, so no timer is scheduled

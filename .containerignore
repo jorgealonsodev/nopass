@@ -1,0 +1,12 @@
+# Keep the container build context small and reproducible.
+#
+# `target/` is hundreds of megabytes of host-built artifacts compiled
+# against the host toolchain and libc. Copying it in is slow and, worse,
+# lets a stale host artifact leak into a lane whose whole purpose is to
+# compile and run against a different distribution.
+#
+# Podman reads this file; Docker reads .dockerignore, which is a symlink
+# to this one so the two lanes cannot drift apart.
+target/
+.git/
+.atl/
