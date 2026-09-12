@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <title>NoPass — passwordless sudo active</title>
+  <rect x="12" y="22" width="24" height="18" rx="3" fill="#2e7d32"/>
+  <path d="M17 22v-6a7 7 0 0 1 13-3.5" fill="none" stroke="#2e7d32" stroke-width="4"/>
+  <circle cx="24" cy="30" r="3" fill="#fefefe"/>
+  <rect x="22.5" y="30" width="3" height="6" fill="#fefefe"/>
+</svg>

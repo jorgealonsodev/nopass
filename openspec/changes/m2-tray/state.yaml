@@ -60,6 +60,17 @@ inherited_from_m1:
       must map each to a distinct user-facing outcome; collapsing them into a
       generic error discards the reason an operation was refused.
     source: openspec/specs/helper-cli/spec.md
+deferred_tasks:
+  - id: "7.7"
+    what: Lane C manual desktop observation of the tray icon in a real panel
+    deferred_to: phase 11
+    why: >
+      Its documented prerequisite, tests/manual/README.md, is a phase 11
+      deliverable. The implementing agent left it unchecked rather than claiming
+      an automated proof of human-visible rendering, which was the right call.
+      It does not block sdd-verify: nothing automated can satisfy it, and phase
+      11 is where the manual lane and its checklist land.
+
 carried_forward_unresolved:
   - >
       tests/containers/Containerfile.systemd, the manual full-systemd lane, has

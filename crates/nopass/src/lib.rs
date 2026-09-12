@@ -21,6 +21,10 @@
 //! Phase 5 adds `outcome` (the exit-code → outcome table, design.md §5,
 //! §5.1) and `invoke` (`pkexec` argv construction and `ActionGate`,
 //! design.md §4.3-4.4).
+//!
+//! Phase 6 adds `format` (icon-name resolution, design.md §7.1). Phase 7
+//! completes `format` (countdown/tooltip/menu-label rendering, §7.2) and
+//! adds `tray` (the only `ksni`-aware module, §2 `tray`).
 
 pub mod state;
 pub mod runner;
@@ -30,3 +34,5 @@ pub mod event;
 pub mod watch;
 pub mod outcome;
 pub mod invoke;
+pub mod format;
+pub mod tray;

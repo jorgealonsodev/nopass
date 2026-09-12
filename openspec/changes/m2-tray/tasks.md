@@ -252,16 +252,16 @@ Periodic Wakeup Beyond the 60-Second Reconciliation Tick"; Proposal slice 4)*
 *(Design §7.1; Spec: tray-presence "Three Visual States With Distinct Icon Names"; Proposal
 slice 6)*
 
-- [ ] 6.1 Create `data/icons/nopass-{locked,unlocked,unlocked-timed}.svg` and the three
+- [x] 6.1 Create `data/icons/nopass-{locked,unlocked,unlocked-timed}.svg` and the three
       `-symbolic` variants — six SVG assets, no embedded pixmaps, no `<script`, no `http`-scheme
       external reference (design §7.1).
-- [ ] 6.2 RED (Lane A) `crates/nopass/tests/icon_assets.rs` — dependency-free `str` assertions:
+- [x] 6.2 RED (Lane A) `crates/nopass/tests/icon_assets.rs` — dependency-free `str` assertions:
       all six present, each starts with an `<svg` root, has a `viewBox`, contains no `<script`,
       no `http`-scheme reference (same pattern as M1's `data_artifacts.rs`, no XML crate). GREEN:
       satisfied by 6.1.
-- [ ] 6.3 Create `crates/nopass/src/format.rs` (new file) — `icon_name(state) -> &'static str`,
+- [x] 6.3 Create `crates/nopass/src/format.rs` (new file) — `icon_name(state) -> &'static str`,
       `-symbolic` default, `NOPASS_ICON_STYLE=color|symbolic` override (design §7.1).
-- [ ] 6.4 RED (Lane A) `format.rs`: `icon_name` full table — `Inactive`⇒`nopass-locked[-symbolic]`,
+- [x] 6.4 RED (Lane A) `format.rs`: `icon_name` full table — `Inactive`⇒`nopass-locked[-symbolic]`,
       `Active{At}`⇒`nopass-unlocked-timed[-symbolic]`, `Active{Never|Reboot|None}`⇒`nopass-
       unlocked[-symbolic]`, `Unknown`⇒`dialog-question-symbolic` (stock, no new asset), both
       styles (tray-presence "Icon name follows the merged state exactly"). GREEN: implement
@@ -276,28 +276,28 @@ of Scope section defers it to M4 packaging alongside `.deb`/`.rpm`/AUR. Nothing 
 
 *(Design §2 `tray`, §7.2, D6, D7; Spec: tray-presence (remaining scenarios); Proposal slice 7)*
 
-- [ ] 7.1 RED (Lane A) `format.rs`: `countdown` at 0/1/59/60/61/3599/3600/28800 s and past-epoch;
+- [x] 7.1 RED (Lane A) `format.rs`: `countdown` at 0/1/59/60/61/3599/3600/28800 s and past-epoch;
       `Never`⇒"no expiry"; `Reboot`⇒"until reboot"; past `At`⇒"expired";
       `Active{expiry:None}`⇒"remaining time unknown" — floor, never round (D7; tray-presence
       "Tooltip renders remaining time at minute granularity"). GREEN: implement `countdown`
       (floor to whole minutes).
-- [ ] 7.2 RED (Lane A) `format.rs`: `tooltip`/`status_line` render `<user> — <state>
+- [x] 7.2 RED (Lane A) `format.rs`: `tooltip`/`status_line` render `<user> — <state>
       (<remaining>)`; `toggle_label(Inactive)`⇒"Enable passwordless sudo",
       `toggle_label(Active)`⇒"Disable passwordless sudo", `toggle_label(Unknown) == None` (D6;
       tray-presence tooltip scenario). GREEN: implement `tooltip`, `status_line`, `toggle_label`.
-- [ ] 7.3 Create `crates/nopass/src/tray.rs` — `trait TrayPort { render, reassert }`, `struct
+- [x] 7.3 Create `crates/nopass/src/tray.rs` — `trait TrayPort { render, reassert }`, `struct
       ViewModel`, `struct KsniTray` — the only `ksni`-aware module (design §2 `tray`).
-- [ ] 7.4 RED (Lane B, `dbus-run-session`) `crates/nopass/tests/dbus_session.rs` (gated
+- [x] 7.4 RED (Lane B, `dbus-run-session`) `crates/nopass/tests/dbus_session.rs` (gated
       `NOPASS_DBUS_TESTS=1`) — SNI registration against a **fake `org.kde.StatusNotifierWatcher`**:
       `RegisterStatusNotifierItem` called; `IconName`/`Status`/`ToolTip`/`Menu` properties read
       back match the `ViewModel` for each `TrayState`, including `dialog-question-symbolic` +
       `NeedsAttention` for `Unknown` (tray-presence "Icon name follows the merged state exactly").
       GREEN: implement `KsniTray::render`.
-- [ ] 7.5 RED (Lane B) `dbus_session.rs`: menu — `Status: <user> — <state> (<remaining>)`
+- [x] 7.5 RED (Lane B) `dbus_session.rs`: menu — `Status: <user> — <state> (<remaining>)`
       insensitive label; toggle item labelled per `toggle_label`, insensitive with "Checking…"
       when `None`; `Quit` exits 0 (design §7.2 minimal-menu table). GREEN: wire the menu into
       `KsniTray`.
-- [ ] 7.6 RED (Lane B) `dbus_session.rs`: no periodic timer other than the 60 s tick is
+- [x] 7.6 RED (Lane B) `dbus_session.rs`: no periodic timer other than the 60 s tick is
       registered on the real reactor under a live bus connection (tray-presence "No timer exists
       solely to refresh the tooltip", structural half). GREEN: covered by 4.4; re-verified here
       under the full stack.
@@ -306,6 +306,10 @@ of Scope section defers it to M4 packaging alongside `.deb`/`.rpm`/AUR. Nothing 
       dark themes (tray-presence "Icon registers and becomes visible within budget"). Requires
       the developer icon-theme install step to `~/.local/share/icons/hicolor/scalable/apps/`
       documented in `tests/manual/README.md` (Phase 11) — real installation is M4 packaging.
+      **Not completed by this apply batch**: this is a Lane C, human-observed check against a
+      real desktop session, and its documented prerequisite (`tests/manual/README.md`) is a
+      Phase 11 deliverable that does not exist yet. Nothing automated in this sandbox can honestly
+      claim to have proven it — left unchecked rather than asserted.
 
 ---
 
