@@ -1,0 +1,58 @@
+# Manual, full-systemd lane (design.md §8: "documented, not a gate").
+#
+# This Containerfile is NOT part of `cargo test --workspace` and is never
+# run by CI. It boots a real systemd as PID 1 with the compiled
+# `nopass-helper` and the real `data/` install artifacts placed at their
+# real system paths, so a human can observe the actual timer firing,
+# `nopass-cleanup.service` running at boot, and `journalctl -t
+# nopass-helper` output — none of which a plain, non-systemd `podman run`
+# (Containerfile.debian / Containerfile.fedora) can exercise, because
+# those two deliberately have no systemd PID 1 for `crates/nopass-helper/
+# src/timer.rs`'s real exit-17 rollback test to fail against.
+#
+# See tests/containers/README.md for how to build, boot, and drive this
+# lane by hand.
+
+# --- stage 1: build the release binary -------------------------------
+FROM debian:12-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        build-essential \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain none --profile minimal
+
+WORKDIR /workspace
+COPY . .
+
+RUN rustup show && cargo build --release -p nopass-helper
+
+# --- stage 2: a real systemd, with the helper installed at its real paths
+FROM debian:12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        sudo \
+        systemd \
+        polkitd \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /workspace/target/release/nopass-helper /usr/libexec/nopass-helper
+COPY data/com.enfoquestic.nopass.policy /usr/share/polkit-1/actions/com.enfoquestic.nopass.policy
+COPY data/nopass-cleanup.service /usr/lib/systemd/system/nopass-cleanup.service
+COPY data/nopass.tmpfiles.conf /usr/lib/tmpfiles.d/nopass.conf
+
+RUN chmod 0755 /usr/libexec/nopass-helper \
+    && systemctl enable nopass-cleanup.service
+
+# Standard systemd-in-a-container convention: forward the real shutdown
+# signal systemd expects, and boot systemd itself as PID 1.
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd"]

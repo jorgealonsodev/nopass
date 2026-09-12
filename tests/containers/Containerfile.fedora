@@ -1,0 +1,38 @@
+# Root lane, Fedora family (design.md §8 Testing strategy).
+#
+# Second distro for the same root-only gate Containerfile.debian runs —
+# catches anything Debian-specific (package layout, `useradd` defaults,
+# `visudo` build options) that a single distro would hide. See
+# Containerfile.debian's header for what this lane does and does not
+# require, and tests/containers/README.md for the exact invocations.
+
+FROM fedora:40
+
+# `sudo` provides both /usr/bin/sudo and /usr/sbin/visudo. `shadow-utils`
+# provides `useradd`/`userdel`, which root_system.rs uses to create
+# disposable test users; it is normally already part of the base Fedora
+# image, but is listed explicitly rather than assumed.
+RUN dnf install -y \
+        sudo \
+        shadow-utils \
+        ca-certificates \
+        curl \
+        gcc \
+        pkgconf-pkg-config \
+    && dnf clean all
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# `--default-toolchain none`: the pinned toolchain comes from
+# rust-toolchain.toml once the workspace is copied in below: `rustup show`
+# installs exactly the channel that file pins (1.85), baking it into this
+# image layer so `podman run` needs no network access.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain none --profile minimal
+
+WORKDIR /workspace
+COPY . .
+
+RUN rustup show && cargo fetch --locked

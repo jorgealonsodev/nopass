@@ -1,0 +1,45 @@
+# Root lane, Debian family (design.md §8 Testing strategy).
+#
+# Builds a disposable image that can run the full `cargo test --workspace`
+# gate as root, including `crates/nopass-helper/tests/root_system.rs`
+# (NOPASS_ROOT_TESTS=1). No systemd is required as PID 1 for this lane —
+# `systemctl`/`systemd-run` are deliberately absent, so
+# `crates/nopass-helper/src/timer.rs` genuinely fails to schedule a timer
+# here, which is exactly what proves the real exit-17 rollback path (see
+# tests/containers/README.md). For an actual running systemd, use
+# Containerfile.systemd instead — a separate, manual lane.
+#
+# Build and run from the repository root; see tests/containers/README.md
+# for the exact invocations.
+
+FROM debian:12-slim
+
+# `sudo` provides both /usr/bin/sudo and /usr/sbin/visudo (design.md §3's
+# candidate list expects both from this one package). `passwd` provides
+# `useradd`/`userdel`, which root_system.rs uses to create disposable test
+# users; it is normally already present as a Debian "Essential" package,
+# but is listed explicitly rather than assumed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        sudo \
+        passwd \
+        ca-certificates \
+        curl \
+        build-essential \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# `--default-toolchain none`: the pinned toolchain comes from
+# rust-toolchain.toml once the workspace is copied in below: `rustup show`
+# installs exactly the channel that file pins (1.85), baking it into this
+# image layer so `podman run` needs no network access.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain none --profile minimal
+
+WORKDIR /workspace
+COPY . .
+
+RUN rustup show && cargo fetch --locked

@@ -85,6 +85,22 @@ mod tests {
         // (which is the only thing this test can assert without a
         // privileged environment), not that it still calls Phase 4's
         // `Ok(())` stubs.
+        //
+        // Phase 10 correction (discovered running `cargo test --workspace`
+        // for real inside the root-lane container, tests/containers/
+        // Containerfile.debian, which — per design.md §8 — is literally
+        // that command run as real root): the `Cmd::Expire` variants in
+        // the loop below resolve context successfully under real root
+        // with no `PKEXEC_UID`, then reach `expire_uid_inner`/
+        // `expire_boot_inner` against this test's own throwaway
+        // `Layout::under(root)`, where no rule exists to act on — they
+        // return `Ok(())`, not the exit-10 this test expects, for exactly
+        // the reason `ops::expire_live_wrapper_rejects_context_when_the_
+        // real_uid_is_not_root` needed the same guard (see that test's own
+        // comment in `ops.rs`).
+        if nix::unistd::geteuid().is_root() {
+            return;
+        }
         let root = std::env::temp_dir().join(format!("nopass_test_main_dispatch_{}", std::process::id()));
         let layout = Layout::under(&root);
         let binaries = Binaries::from_candidates(&[]);

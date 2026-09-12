@@ -1366,6 +1366,19 @@ mod tests {
         // The real test-process uid is never 0 in this suite's target
         // environment (a real Linux dev/CI machine, non-root) — proves
         // `expire`'s call site genuinely reads `nix::unistd::getuid()`.
+        //
+        // Phase 10 correction (discovered running `cargo test --workspace`
+        // for real inside the root-lane container, tests/containers/
+        // Containerfile.debian): that is literally the command design.md
+        // §8 documents for the root lane, and it runs the ENTIRE workspace
+        // suite as real root — including this test, whose premise is
+        // exactly the opposite. This is the same root-bypasses-the-fixture
+        // situation `disable_inner_removal_failure_propagates_and_never_
+        // stops_the_timer` (and its siblings) already guard against
+        // elsewhere in this file; this one test was missing that guard.
+        if nix::unistd::geteuid().is_root() {
+            return;
+        }
         let (root, layout) = fresh_layout("expire_live_ctx");
         let binaries = fake_binaries(&root);
         let runner = ScriptedRunner::new(vec![]);
