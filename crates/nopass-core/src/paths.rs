@@ -66,6 +66,14 @@ impl Layout {
     pub fn lock_path(&self) -> PathBuf {
         self.run_dir.join("lock")
     }
+
+    /// The directory every rule file lives directly under
+    /// (`/etc/sudoers.d` in production). `fileops::list_rule_uids`
+    /// (Phase 6) needs the bare directory itself — not a file path within
+    /// it — to enumerate its entries via `read_dir`.
+    pub fn sudoers_dir(&self) -> &Path {
+        &self.sudoers_dir
+    }
 }
 
 /// Extracts the uid from a canonical NoPass rule filename.
@@ -139,6 +147,17 @@ mod tests {
         assert_eq!(uid_from_rule_filename("91-nopass-1000"), None);
         assert_eq!(uid_from_rule_filename("90-nopass-"), None);
         assert_eq!(uid_from_rule_filename("90-nopass-abc"), None);
+    }
+
+    #[test]
+    fn sudoers_dir_accessor_returns_the_directory_every_rule_path_is_joined_under() {
+        let system = Layout::system();
+        assert_eq!(system.sudoers_dir(), Path::new("/etc/sudoers.d"));
+
+        let root = PathBuf::from("/tmp/nopass-test-root");
+        let under = Layout::under(&root);
+        assert_eq!(under.sudoers_dir(), Path::new("/tmp/nopass-test-root/sudoers.d"));
+        assert_eq!(under.rule_path(3000).parent().unwrap(), under.sudoers_dir());
     }
 
     #[test]

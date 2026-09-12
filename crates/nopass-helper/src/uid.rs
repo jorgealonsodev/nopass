@@ -16,8 +16,11 @@
 //! `resolve` performs no filesystem or process I/O of its own, so every
 //! rejection case is zero-mutation by construction — there is no `Layout`
 //! or `CommandRunner` in scope for it to act through.
-#![allow(dead_code)] // Phase 7's ops.rs is the production caller; until it
-// lands, `resolve` is exercised only by the tests below.
+// Phase 7's ops.rs is the production caller; until it lands, `resolve` is
+// exercised only by the tests below. No `#[allow(dead_code)]` is needed
+// despite that: `InvocationContext` and `resolve` are `pub` inside this
+// crate's `pub mod uid` (declared in `lib.rs`), which makes them public
+// library API exempt from the `dead_code` lint.
 
 use crate::cli::Cmd;
 use crate::error::HelperError;

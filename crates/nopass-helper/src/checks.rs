@@ -8,10 +8,11 @@
 //! it MUST NEVER be consulted by `is_sudoer` or otherwise override the
 //! probe's verdict (privilege-admission §Existing-Sudoer Probe).
 //!
-//! Phase 7's `ops.rs` is the production caller of every function here;
-//! until it lands, a normal (non-test) build never calls them, hence the
-//! blanket allow below.
-#![allow(dead_code)]
+//! Phase 7's `ops.rs` is the production caller of every function here and
+//! is the only caller wired into `main`'s `dispatch` so far. No
+//! `#[allow(dead_code)]` is needed despite that: every item below is
+//! `pub` inside this crate's `pub mod checks` (declared in `lib.rs`),
+//! which makes it public library API exempt from the `dead_code` lint.
 
 use std::ffi::CString;
 

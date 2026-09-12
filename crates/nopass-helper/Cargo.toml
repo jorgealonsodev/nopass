@@ -11,3 +11,10 @@ clap = { workspace = true }
 nix = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# Integration tests (`tests/*.rs`) are a separate crate and do not
+# automatically inherit `[dependencies]` — `nix` is re-listed here so
+# `tests/fileops_tempdir.rs` can call `nix::sys::stat::umask` for its
+# isolated umask-defeat scenario. Same version, no new features.
+nix = { workspace = true }

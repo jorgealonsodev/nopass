@@ -3,11 +3,11 @@
 //! binaries (design.md §3; threat matrix "External command composition").
 //!
 //! `checks`, `timer`, and `fileops` (Phases 5-7) are the modules that
-//! actually invoke a `CommandRunner` in production. Until they land, a
-//! normal (non-test) build never constructs a `SystemRunner` or a
-//! `CommandSpec`, hence the blanket allow below. Remove it once Phase 5
-//! wires `checks::is_sudoer` etc.
-#![allow(dead_code)]
+//! actually invoke a `CommandRunner` in production; `ops.rs` (Phase 7) is
+//! the only caller wired into `main`'s `dispatch` so far. No
+//! `#[allow(dead_code)]` is needed despite that: every item below is
+//! `pub` inside this crate's `pub mod runner` (declared in `lib.rs`),
+//! which makes it public library API exempt from the `dead_code` lint.
 
 #[cfg(test)]
 use std::cell::RefCell;

@@ -9,12 +9,12 @@
 //! `Ok(())`, not a `HelperError` variant.
 //!
 //! `lock`, `fileops`, `timer`, and `ops` (Phases 6-7) are the modules that
-//! actually construct most of these variants; until they land, a normal
-//! (non-test) build never constructs them, hence the blanket allow below.
-//! Phase 5 wires `checks::admit_uid`/`checks::is_sudoer`, but neither is
-//! called from `main` yet (that wiring is Phase 7's `ops.rs`), so this
-//! attribute stays until then.
-#![allow(dead_code)]
+//! actually construct most of these variants; `ops.rs` (Phase 7) is the
+//! only caller wired into `main`'s `dispatch` so far. No
+//! `#[allow(dead_code)]` is needed despite that: `HelperError` and
+//! `exit_code` are `pub` inside this crate's `pub mod error` (declared in
+//! `lib.rs`), which makes them public library API exempt from the
+//! `dead_code` lint.
 
 use crate::checks::UidRejection;
 

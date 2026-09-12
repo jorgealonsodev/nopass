@@ -4,10 +4,13 @@
 //! and `disable` still work on a host without `systemd-run` installed.
 //!
 //! `checks`, `timer`, and `fileops` (Phases 5-7) are the modules that
-//! actually call `resolve()` in production. Until they land, a normal
-//! (non-test) build never constructs a `Binaries`, hence the blanket
-//! allow below. Remove it once Phase 5 wires `checks::is_sudoer` etc.
-#![allow(dead_code)]
+//! actually call `resolve()` in production; `ops.rs` (Phase 7) is the
+//! only caller wired into `main`'s `dispatch`. No `#[allow(dead_code)]`
+//! is needed here despite that: every item below is `pub` inside this
+//! crate's `pub mod bins` (declared in `lib.rs`), which makes it public
+//! library API — the `dead_code` lint does not fire on `pub` items of a
+//! library crate, since an external crate (including this crate's own
+//! `tests/fileops_tempdir.rs`, which does exactly this) could call them.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
