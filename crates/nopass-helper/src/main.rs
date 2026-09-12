@@ -10,18 +10,23 @@
 //!
 //! Phase 4 adds the CLI surface (`cli`), typed exit-code mapping
 //! (`error`), the `CommandRunner` port (`runner`), and binary resolution
-//! (`bins`), and wires them together here: `Cli::parse()` → `dispatch` →
-//! a stub handler per subcommand that returns `Ok(())` without touching
-//! the system. Phase 5 adds invocation-context uid resolution (`uid`) and
-//! uid/sudoer admission checks (`checks`). Phase 6 adds the mutation
-//! lock (`lock`) and atomic sudoers-rule file operations (`fileops`).
-//! None of these are wired into `dispatch` yet — that lands with the real
-//! `ops::{enable,disable,status,expire}` transactions in Phase 7.
+//! (`bins`). Phase 5 adds invocation-context uid resolution (`uid`) and
+//! uid/sudoer admission checks (`checks`). Phase 6 adds the mutation lock
+//! (`lock`) and atomic sudoers-rule file operations (`fileops`). Phase 7
+//! adds timer management (`timer`) and the four real
+//! `ops::{enable,disable,status,expire}` transactions, and wires them in
+//! here, replacing the Phase 4 stub handlers. `Layout::system()` and
+//! `Binaries::system()` are each constructed exactly once, right here, per
+//! design.md §2/§3.
 
 use clap::Parser;
 
+use nopass_core::paths::Layout;
+use nopass_helper::bins::Binaries;
 use nopass_helper::cli::{Cli, Cmd};
 use nopass_helper::error::HelperError;
+use nopass_helper::ops;
+use nopass_helper::runner::SystemRunner;
 
 fn main() {
     std::process::exit(run())
@@ -32,7 +37,9 @@ fn main() {
 /// parse failure before this function's body ever runs.
 fn run() -> i32 {
     let cli = Cli::parse();
-    to_exit_code(dispatch(cli.cmd))
+    let layout = Layout::system();
+    let binaries = Binaries::system();
+    to_exit_code(dispatch(cli.cmd, &layout, &SystemRunner, &binaries))
 }
 
 /// `Ok(())` → 0; any `HelperError` → its documented exit code.
@@ -43,32 +50,20 @@ fn to_exit_code(result: Result<(), HelperError>) -> i32 {
     }
 }
 
-/// Routes a parsed subcommand to its handler. Every handler is currently
-/// a stub returning `Ok(())`; Phase 7 replaces each with the real
-/// `ops::*` transaction.
-fn dispatch(cmd: Cmd) -> Result<(), HelperError> {
+/// Routes a parsed subcommand to its real `ops::*` transaction
+/// (design.md §4).
+fn dispatch(
+    cmd: Cmd,
+    layout: &Layout,
+    runner: &nopass_helper::runner::SystemRunner,
+    binaries: &Binaries,
+) -> Result<(), HelperError> {
     match cmd {
-        Cmd::Enable { until, until_reboot } => stub_enable(until, until_reboot),
-        Cmd::Disable => stub_disable(),
-        Cmd::Status => stub_status(),
-        Cmd::Expire { uid, boot } => stub_expire(uid, boot),
+        Cmd::Enable { until, until_reboot } => ops::enable(layout, runner, binaries, until, until_reboot),
+        Cmd::Disable => ops::disable(layout, runner, binaries),
+        Cmd::Status => ops::status(layout),
+        Cmd::Expire { uid, boot } => ops::expire(layout, runner, binaries, uid, boot),
     }
-}
-
-fn stub_enable(_until: Option<u64>, _until_reboot: bool) -> Result<(), HelperError> {
-    Ok(())
-}
-
-fn stub_disable() -> Result<(), HelperError> {
-    Ok(())
-}
-
-fn stub_status() -> Result<(), HelperError> {
-    Ok(())
-}
-
-fn stub_expire(_uid: Option<u32>, _boot: bool) -> Result<(), HelperError> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -76,13 +71,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dispatch_routes_every_subcommand_to_an_ok_stub_handler() {
-        assert!(dispatch(Cmd::Enable { until: Some(100), until_reboot: false }).is_ok());
-        assert!(dispatch(Cmd::Enable { until: None, until_reboot: true }).is_ok());
-        assert!(dispatch(Cmd::Disable).is_ok());
-        assert!(dispatch(Cmd::Status).is_ok());
-        assert!(dispatch(Cmd::Expire { uid: Some(1000), boot: false }).is_ok());
-        assert!(dispatch(Cmd::Expire { uid: None, boot: true }).is_ok());
+    fn dispatch_routes_every_subcommand_and_rejects_missing_pkexec_context() {
+        // No PKEXEC_UID/real-root context is available in this test
+        // process, so every routed subcommand fails at context
+        // resolution (exit 10) rather than mutating anything — this
+        // proves `dispatch` reaches the real `ops::*` entry points
+        // (which is the only thing this test can assert without a
+        // privileged environment), not that it still calls Phase 4's
+        // `Ok(())` stubs.
+        let root = std::env::temp_dir().join(format!("nopass_test_main_dispatch_{}", std::process::id()));
+        let layout = Layout::under(&root);
+        let binaries = Binaries::from_candidates(&[]);
+        for cmd in [
+            Cmd::Enable { until: Some(100), until_reboot: false },
+            Cmd::Enable { until: None, until_reboot: true },
+            Cmd::Disable,
+            Cmd::Status,
+            Cmd::Expire { uid: Some(1000), boot: false },
+            Cmd::Expire { uid: None, boot: true },
+        ] {
+            let err = dispatch(cmd, &layout, &SystemRunner, &binaries).unwrap_err();
+            assert_eq!(err.exit_code(), 10);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

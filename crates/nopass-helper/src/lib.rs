@@ -19,9 +19,10 @@
 //! code mapping) is unchanged.
 //!
 //! Phase 6 adds `lock` (the `flock` mutation-serialization guard) and
-//! `fileops` (atomic sudoers-rule file operations). Neither is wired into
-//! `main`'s `dispatch` yet — that lands with the real
-//! `ops::{enable,disable,status,expire}` transactions in Phase 7.
+//! `fileops` (atomic sudoers-rule file operations). Phase 7 adds `timer`
+//! (transient expiry-timer scheduling) and `ops` — the real
+//! `enable`/`disable`/`status`/`expire` transactions — and wires `ops`
+//! into `main`'s `dispatch`, replacing the Phase 4 stub handlers.
 
 pub mod bins;
 pub mod checks;
@@ -29,5 +30,7 @@ pub mod cli;
 pub mod error;
 pub mod fileops;
 pub mod lock;
+pub mod ops;
 pub mod runner;
+pub mod timer;
 pub mod uid;

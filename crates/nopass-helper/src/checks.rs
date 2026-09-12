@@ -59,15 +59,24 @@ pub fn lookup_user(uid: u32) -> Result<String, HelperError> {
 /// range is even consulted, so a `range.min == 0` (e.g. a malformed
 /// `/etc/login.defs` before `logindefs::parse`'s own floor clamp) can never
 /// admit it.
+///
+/// `UidRange::admits` is the sole authority on the range admit/reject
+/// decision — this function never re-derives it. The `uid < range.min`
+/// check below only classifies WHICH rejection variant to report
+/// (`BelowMin` vs `AboveMax`) once `admits` has already said no; it can
+/// never itself grant admission (independent-verifier finding: the two
+/// used to be separately maintained inline comparisons that could drift
+/// apart silently — see `admit_uid_agrees_with_uid_range_admits_across_the_boundary_table`).
 pub fn admit_uid(uid: u32, range: &UidRange) -> Result<(), UidRejection> {
     if uid == 0 {
         return Err(UidRejection::Root);
     }
-    if uid < range.min {
-        return Err(UidRejection::BelowMin { min: range.min });
-    }
-    if uid > range.max {
-        return Err(UidRejection::AboveMax { max: range.max });
+    if !range.admits(uid) {
+        return Err(if uid < range.min {
+            UidRejection::BelowMin { min: range.min }
+        } else {
+            UidRejection::AboveMax { max: range.max }
+        });
     }
     match nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)) {
         Ok(Some(_)) => Ok(()),
@@ -205,6 +214,52 @@ mod tests {
         assert_eq!(admit_uid(4_294_967_294, &range), Err(UidRejection::Unknown));
     }
 
+    // --- admit_uid must never diverge from UidRange::admits -------------
+
+    #[test]
+    fn admit_uid_agrees_with_uid_range_admits_across_the_boundary_table() {
+        // Independent-verifier finding: `admit_uid` used to re-implement
+        // the range comparison inline instead of delegating the
+        // admit/reject decision to `UidRange::admits`. The two are
+        // editable independently and can silently diverge — this table
+        // drives both across every boundary they must agree on, so a
+        // future edit to either one that breaks agreement fails here
+        // first. This is the real deliverable, not a passing assertion.
+        let boundary_ranges = [
+            UidRange { min: 1000, max: 60_000 }, // the real default range
+            UidRange { min: 1, max: 1 },         // single-uid range
+            UidRange { min: 0, max: 0 },         // pathological floor-less range
+            UidRange { min: 2000, max: 1000 },   // malformed/inverted range
+        ];
+        let boundary_uids = [0u32, 1, 999, 1000, 1500, 60_000, 60_001, 2000, 4_294_967_295];
+
+        for range in &boundary_ranges {
+            for &uid in &boundary_uids {
+                if uid == 0 {
+                    // `admit_uid` rejects uid 0 unconditionally BEFORE
+                    // the range is even consulted (a stricter guarantee
+                    // than `admits` alone provides) — pinned separately
+                    // so a `range.min == 0` can never let root through.
+                    assert_eq!(admit_uid(uid, range), Err(UidRejection::Root));
+                    continue;
+                }
+                let admits_says_yes = range.admits(uid);
+                // Isolate the range portion of `admit_uid`'s verdict from
+                // the passwd-lookup portion (`Unknown`), since `admits`
+                // has no opinion on passwd existence at all.
+                let range_rejected = matches!(
+                    admit_uid(uid, range),
+                    Err(UidRejection::BelowMin { .. }) | Err(UidRejection::AboveMax { .. })
+                );
+                assert_eq!(
+                    range_rejected,
+                    !admits_says_yes,
+                    "uid {uid} against {range:?}: admit_uid range-rejected={range_rejected} but admits()={admits_says_yes}"
+                );
+            }
+        }
+    }
+
     // --- in_admin_group (advisory) --------------------------------------
 
     #[test]
@@ -225,12 +280,14 @@ mod tests {
         assert!(is_sudoer(&runner, &real_binaries(), "ana").is_ok());
     }
 
-    #[test]
-    fn probe_exit_zero_admits() {
-        let outcome = CommandOutcome { status: Some(0), stdout: vec![], stderr: vec![] };
-        let runner = ScriptedRunner::new(vec![(expected_probe_spec("jorge"), Ok(outcome))]);
-        assert!(is_sudoer(&runner, &real_binaries(), "jorge").is_ok());
-    }
+    // `probe_exit_zero_admits` was removed (independent-verifier finding):
+    // it asserted the exact same outcome as
+    // `is_sudoer_builds_the_exact_pinned_argv_with_no_shell_and_only_lang_c_env`
+    // above with a different username and added no distinct coverage.
+    // The argv-pinning test above already carries the load-bearing
+    // security assertion (no shell, only `LANG`/`LC_ALL` env); this is
+    // the third time this exact-duplicate pattern has appeared in this
+    // project, so the duplicate is deleted rather than kept.
 
     #[test]
     fn probe_nonzero_rejects_even_when_the_user_is_group_flagged() {

@@ -35,12 +35,12 @@ apply_progress:
   phase_4_helper_cli_runner_errors_bins: settled-passed   # verifier PASS WITH FINDINGS; 2 real gaps fixed, budget reset authorized
   phase_5_uid_checks: settled-passed   # verifier PASS WITH FINDINGS; 4 test-honesty fixes applied
   phase_6_fileops_lock: settled-passed   # verifier PASS WITH FINDINGS; 1 real security defect fixed
-  phase_7_timer_ops: pending
+  phase_7_timer_ops: settled-passed   # verifier PASS WITH FINDINGS; 3 low findings fixed
   phase_8_statefile_journal: pending
   phase_9_data_artifacts: pending
   phase_10_container_lane: pending
-tasks_complete: 27/45
-workspace_tests: 146
+tasks_complete: 33/45
+workspace_tests: 190
 delivery:
   work_units_planned: 14   # revised from 13 after Phase 4 overran its forecast
   deferred: []
