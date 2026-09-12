@@ -142,34 +142,34 @@ Inactive"; Proposal slice 2 — the highest-value task in this change: every lat
 *(Design §3.2–§3.3, §4.1–§4.2, D3; Spec: tray-state-sync "Live Probe Takes Precedence",
 "Reconciliation Runs at Four Defined Triggers"; Proposal slice 3)*
 
-- [ ] 3.1 Create `crates/nopass/src/runner.rs` — `CommandSpec`, `SpawnOutcome`, `RunnerError`,
+- [x] 3.1 Create `crates/nopass/src/runner.rs` — `CommandSpec`, `SpawnOutcome`, `RunnerError`,
       `CommandRunner` trait, `SystemRunner`, `run_off_reactor` (design §4.1–4.2). `ScriptedRunner`
       under `#[cfg(test)]`.
-- [ ] 3.2 RED (Lane A) `runner.rs`: non-absolute `program` rejected before any spawn (threat
+- [x] 3.2 RED (Lane A) `runner.rs`: non-absolute `program` rejected before any spawn (threat
       matrix "External command composition"); `status: None` (signalled) ⇒
       `RunnerError::Signaled`, never treated as success. GREEN: implement `SystemRunner`
       (`env_clear`, `Stdio::null()` stdin, no shell).
-- [ ] 3.3 Create `crates/nopass/src/probe.rs` — `enum Probe { Passwordless, PasswordRequired }`,
+- [x] 3.3 Create `crates/nopass/src/probe.rs` — `enum Probe { Passwordless, PasswordRequired }`,
       `enum ProbeError`, `probe::spec` (`/usr/bin/sudo -k -n true`, env `LANG=C, LC_ALL=C`),
       `interpret`, `ProbeCache`, `MAX_PROBE_AGE_SECS = 90` (design §3.3, §4.3).
-- [ ] 3.4 RED (Lane A) `probe.rs`: exact `CommandSpec` equality for `probe::spec` via
+- [x] 3.4 RED (Lane A) `probe.rs`: exact `CommandSpec` equality for `probe::spec` via
       `ScriptedRunner`; `ProbeCache::usable` — probe older than the file ⇒ `None`; age 89/90/91 s
       boundaries (tray-state-sync "Probe resolves an Unknown state"). GREEN: implement `spec`,
       `interpret`, `ProbeCache::usable`.
-- [ ] 3.5 Create `crates/nopass/src/reconcile.rs` — `enum TrayState { Active{user,expiry},
+- [x] 3.5 Create `crates/nopass/src/reconcile.rs` — `enum TrayState { Active{user,expiry},
       Inactive, Unknown }`, `merge(file, probe, now)`, `enum Trigger`, `probe_required` (design
       §3.2, §3.4).
-- [ ] 3.6 RED (Lane A) `reconcile.rs`: **all 8 merge-table rows exhaustively**, both probe values
+- [x] 3.6 RED (Lane A) `reconcile.rs`: **all 8 merge-table rows exhaustively**, both probe values
       × every `FileReading` variant × expired/unexpired `now`; named test
       `missing_file_and_probe_passwordless_yields_active_with_no_expiry` (design §3.2 row 1;
       tray-state-sync "Missing state file never reads as inactive", "Probe overrides a stale
       active file"). GREEN: implement `merge` per the 8-row table.
-- [ ] 3.7 RED (Lane A) `reconcile.rs`: `probe_required` — full `Trigger` × `TrayState` table,
+- [x] 3.7 RED (Lane A) `reconcile.rs`: `probe_required` — full `Trigger` × `TrayState` table,
       `Unknown` forces a probe on entry regardless of trigger; a fake probe-port invocation
       counter records exactly one call per `Startup`/`FileEvent`/`ActionCompleted`/60 s `Tick`,
       and only when the cache is unusable for `MenuOpened` (tray-state-sync "Reconciliation Runs
       at Four Defined Triggers"). GREEN: implement `probe_required`.
-- [ ] 3.8 RED (Lane A): threat matrix "Stale or forged observation source" — a state file
+- [x] 3.8 RED (Lane A): threat matrix "Stale or forged observation source" — a state file
       claiming `active:true` while the probe says `PasswordRequired` renders `Inactive` (design
       threat matrix row 6; `/run/nopass` `0755 root:root` documented as a comment, not a test).
       GREEN: covered by 3.6.
