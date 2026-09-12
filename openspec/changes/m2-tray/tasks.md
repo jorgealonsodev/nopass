@@ -204,42 +204,42 @@ Periodic Wakeup Beyond the 60-Second Reconciliation Tick"; Proposal slice 4)*
 
 *(Design §4.3–§4.4, §5, §5.1, D5, D9; Spec: tray-privileged-invocation (all); Proposal slice 5)*
 
-- [ ] 5.1 Create `crates/nopass/src/invoke.rs` — `pkexec_spec(pkexec, helper, action, locale)`,
+- [x] 5.1 Create `crates/nopass/src/invoke.rs` — `pkexec_spec(pkexec, helper, action, locale)`,
       `struct ActionGate` (design §4.3–4.4, D9: `env_clear()` then only `LANG`/`LC_ALL`/
       `LC_MESSAGES` pass through — deliberately unlike M1's `LANG=C` forcing).
-- [ ] 5.2 RED (Lane A) `invoke.rs`: exact `pkexec` argv — `pkexec /usr/libexec/nopass-helper
+- [x] 5.2 RED (Lane A) `invoke.rs`: exact `pkexec` argv — `pkexec /usr/libexec/nopass-helper
       enable --until <epoch>` / `disable`, no `--user`, no shell; env pass-through list is exactly
       `LANG`/`LC_ALL`/`LC_MESSAGES` and nothing else (tray-privileged-invocation "Enable
       invocation uses the exact documented argv"; threat matrix "External command composition").
       GREEN: implement `pkexec_spec`.
-- [ ] 5.3 RED (Lane A) `invoke.rs`: second `ActionGate::try_begin()` while one is in flight ⇒
+- [x] 5.3 RED (Lane A) `invoke.rs`: second `ActionGate::try_begin()` while one is in flight ⇒
       `None` (design §4.4). GREEN: implement `ActionGate`.
-- [ ] 5.4 Create `crates/nopass/src/outcome.rs` — `enum Action`, `enum OutcomeKind` (one variant
+- [x] 5.4 Create `crates/nopass/src/outcome.rs` — `enum Action`, `enum OutcomeKind` (one variant
       per §5 row plus `UnexpiringGrant`), `enum Severity`, `classify(action, status,
       helper_present)`, `escalate(prev, probe)` (design §5, §5.1).
-- [ ] 5.5 RED (Lane A) `outcome.rs`: one case per code 0/1/2/10–17/126/127/spawn-failure/
+- [x] 5.5 RED (Lane A) `outcome.rs`: one case per code 0/1/2/10–17/126/127/spawn-failure/
       signalled; 127 × `helper_present` both ways (`HelperMissing` vs `NotAuthorized` via
       `access(HELPER_PATH, X_OK)`); a uniqueness assertion over all rendered `(summary, body)`
       pairs (tray-privileged-invocation "Each documented code produces its own message", "Exit 17
       is distinguished...", "pkexec 126 and 127 are distinguished..."). GREEN: implement
       `classify`, the 127 disambiguation.
-- [ ] 5.6 RED (Lane A) `outcome.rs` — §5.1 escalation, written against "a bare 17 is state
+- [x] 5.6 RED (Lane A) `outcome.rs` — §5.1 escalation, written against "a bare 17 is state
       unknown, reconcile now" and independent of whether M1's in-flight `rolled_back` fix has
       landed: `TimerUnscheduled` + probe `Passwordless` ⇒ `Some(UnexpiringGrant)`;
       `TimerUnscheduled` + probe `PasswordRequired` ⇒ `None`; no other `OutcomeKind` escalates
       under either probe value; assert the `TimerUnscheduled` text claims neither "nothing was
       changed" nor an active grant (design §5.1; threat matrix "A failure code that may accompany
       a live grant"). GREEN: implement `escalate`.
-- [ ] 5.7 RED (Lane A): threat matrix "External command composition" completion — `CommandSpec`
+- [x] 5.7 RED (Lane A): threat matrix "External command composition" completion — `CommandSpec`
       equality for `pkexec` and `sudo` together, env allow-list equality, non-absolute program ⇒
       `NonAbsoluteProgram` with zero spawns (one table-driven test spanning both `probe.rs` and
       `invoke.rs` ports). GREEN: covered by 3.1–3.2, 5.1–5.2.
-- [ ] 5.8 RED (Lane A): the tray's I/O port surface (`/run/nopass/` read+watch, `pkexec`,
+- [x] 5.8 RED (Lane A): the tray's I/O port surface (`/run/nopass/` read+watch, `pkexec`,
       `sudo -kn true`) contains no port that accepts or resolves a path under `/etc/sudoers.d/` —
       a structural assertion over the port trait definitions (tray-privileged-invocation "The
       tray's I/O surface excludes /etc/sudoers.d entirely"). GREEN: none — pins a compile-time
       property; the test documents it.
-- [ ] 5.9 RED (Lane B, `dbus-run-session`): a pending `pkexec` (fake spawn port blocking until
+- [x] 5.9 RED (Lane B, `dbus-run-session`): a pending `pkexec` (fake spawn port blocking until
       released) does not prevent the tray from handling a menu-open or `Quit` request
       (tray-privileged-invocation "Menu remains responsive during a pending authorization").
       GREEN: proven by the off-reactor thread bridge (design §4.2) under a real event loop, not

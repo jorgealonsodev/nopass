@@ -17,6 +17,10 @@
 //! Phase 4 adds `watch` (the inotify directory watch, D8) and a partial
 //! `event` (the `Event` enum's watch/probe-producible variants only —
 //! see `event.rs` for why the rest waits for Phase 10).
+//!
+//! Phase 5 adds `outcome` (the exit-code → outcome table, design.md §5,
+//! §5.1) and `invoke` (`pkexec` argv construction and `ActionGate`,
+//! design.md §4.3-4.4).
 
 pub mod state;
 pub mod runner;
@@ -24,3 +28,5 @@ pub mod probe;
 pub mod reconcile;
 pub mod event;
 pub mod watch;
+pub mod outcome;
+pub mod invoke;
