@@ -16,7 +16,7 @@ phases:
   tasks: done
   apply: done
   verify: done   # PASS WITH WARNINGS; 0 critical
-  archive: pending
+  archive: done
 engram_topics:
   explore: sdd/m1-core-helper/explore
   research: sdd/m1-core-helper/research
