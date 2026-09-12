@@ -37,10 +37,10 @@ apply_progress:
   phase_6_fileops_lock: settled-passed   # verifier PASS WITH FINDINGS; 1 real security defect fixed
   phase_7_timer_ops: settled-passed   # verifier PASS WITH FINDINGS; 3 low findings fixed
   phase_8_statefile_journal: settled-passed   # 4 parent-rejected deferrals closed as contract gaps
-  phase_9_data_artifacts: pending
+  phase_9_data_artifacts: settled-passed   # verbatim per design section 7, no deviation
   phase_10_container_lane: pending
-tasks_complete: 36/45
-workspace_tests: 223
+tasks_complete: 40/45
+workspace_tests: 230
 delivery:
   work_units_planned: 14   # revised from 13 after Phase 4 overran its forecast
   deferred: []

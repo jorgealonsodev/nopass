@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>NoPass</vendor>
+  <action id="com.enfoquestic.nopass.manage">
+    <description>Manage passwordless sudo for the current user</description>
+    <description xml:lang="es">Activar o desactivar sudo sin contraseña para el usuario actual</description>
+    <message>Authentication is required to modify sudo rules</message>
+    <message xml:lang="es">Se requiere autenticación para modificar las reglas de sudo</message>
+    <icon_name>nopass</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/nopass-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

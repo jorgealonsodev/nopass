@@ -139,10 +139,10 @@ Rationale for stacked-to-main: the repository is greenfield (no deployed users),
 
 *(Spec: `privilege-admission` §Single Polkit Action; Design §7)*
 
-- [ ] 9.1 Create `data/com.enfoquestic.nopass.policy` verbatim per design §7 — single action `com.enfoquestic.nopass.manage`, `allow_any=no`/`allow_inactive=no`/`allow_active=auth_admin_keep`, `exec.path=/usr/libexec/nopass-helper`.
-- [ ] 9.2 Create `data/nopass-cleanup.service` verbatim per design §7 — `ConditionPathExistsGlob=/etc/sudoers.d/90-nopass-*`, `Before=systemd-user-sessions.service display-manager.service`, `ExecStart=/usr/libexec/nopass-helper expire --boot`.
-- [ ] 9.3 Create `data/nopass.tmpfiles.conf` — `d /run/nopass 0755 root root -`.
-- [ ] 9.4 RED `crates/nopass-helper/tests/data_artifacts.rs`: plain-`str` assertions (no XML/regex dep) — exactly one `<action id=`, correct id + `allow_*` + `exec.path`; tmpfiles line; cleanup unit `Type=oneshot`/`ConditionPathExistsGlob`/`Before=systemd-user-sessions.service` (privilege-admission §Single Polkit Action). GREEN: satisfied by 9.1–9.3.
+- [x] 9.1 Create `data/com.enfoquestic.nopass.policy` verbatim per design §7 — single action `com.enfoquestic.nopass.manage`, `allow_any=no`/`allow_inactive=no`/`allow_active=auth_admin_keep`, `exec.path=/usr/libexec/nopass-helper`.
+- [x] 9.2 Create `data/nopass-cleanup.service` verbatim per design §7 — `ConditionPathExistsGlob=/etc/sudoers.d/90-nopass-*`, `Before=systemd-user-sessions.service display-manager.service`, `ExecStart=/usr/libexec/nopass-helper expire --boot`.
+- [x] 9.3 Create `data/nopass.tmpfiles.conf` — `d /run/nopass 0755 root root -`.
+- [x] 9.4 RED `crates/nopass-helper/tests/data_artifacts.rs`: plain-`str` assertions (no XML/regex dep) — exactly one `<action id=`, correct id + `allow_*` + `exec.path`; tmpfiles line; cleanup unit `Type=oneshot`/`ConditionPathExistsGlob`/`Before=systemd-user-sessions.service` (privilege-admission §Single Polkit Action). GREEN: satisfied by 9.1–9.3.
 
 ## Phase 10: Container Integration Test Lane
 

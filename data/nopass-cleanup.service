@@ -1,0 +1,17 @@
+[Unit]
+Description=NoPass — remove expired passwordless sudo rules
+ConditionPathExistsGlob=/etc/sudoers.d/90-nopass-*
+RequiresMountsFor=/etc /run
+After=systemd-tmpfiles-setup.service
+Before=systemd-user-sessions.service display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/libexec/nopass-helper expire --boot
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
