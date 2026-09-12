@@ -13,8 +13,14 @@
 //! `probe`, `reconcile`, `outcome`, `format`, `runner`, `invoke`, `watch`,
 //! `tray`, `notifications`, `instance`, `preflight`, `event` and `app`
 //! each land in the phase that first needs them (design.md §1, §2).
+//!
+//! Phase 4 adds `watch` (the inotify directory watch, D8) and a partial
+//! `event` (the `Event` enum's watch/probe-producible variants only —
+//! see `event.rs` for why the rest waits for Phase 10).
 
 pub mod state;
 pub mod runner;
 pub mod probe;
 pub mod reconcile;
+pub mod event;
+pub mod watch;

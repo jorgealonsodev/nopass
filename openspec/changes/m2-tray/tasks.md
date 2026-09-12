@@ -181,19 +181,19 @@ Inactive"; Proposal slice 2 — the highest-value task in this change: every lat
 *(Design §4.2, D8; Spec: tray-state-sync "Inotify Watch With Missing-Directory Fallback", "No
 Periodic Wakeup Beyond the 60-Second Reconciliation Tick"; Proposal slice 4)*
 
-- [ ] 4.1 Create `crates/nopass/src/watch.rs` — `struct Watch`, `Watch::start(run_dir, uid, tx)`,
+- [x] 4.1 Create `crates/nopass/src/watch.rs` — `struct Watch`, `Watch::start(run_dir, uid, tx)`,
       `enum WatchError { DirMissing, Io }`, `DEBOUNCE_MS = 100`; watches the **directory**, never
       the file (design D8 — the helper replaces the state file by `rename`).
-- [ ] 4.2 RED (Lane A) `crates/nopass/tests/watch_inotify.rs` — **real inotify against a
+- [x] 4.2 RED (Lane A) `crates/nopass/tests/watch_inotify.rs` — **real inotify against a
       `TempDir`**: create/rename/delete of `<uid>.state` each yield exactly one debounced event;
       an unrelated sibling file yields none; missing directory ⇒ `WatchError::DirMissing`
       (tray-state-sync "A state-file write is observed within budget", "Missing run directory
       falls back to reconciliation only"). GREEN: implement `Watch::start`, bridging `notify`'s
       thread to the reactor via `async_channel`, never a blocking `recv` (design §4.2).
-- [ ] 4.3 Create `crates/nopass/src/event.rs` (partial) — `enum Event { FileChanged, Tick,
+- [x] 4.3 Create `crates/nopass/src/event.rs` (partial) — `enum Event { FileChanged, Tick,
       ProbeFinished(...), ActionFinished(...), ... }` scaffolding to drive `watch`/probe results
       into a channel (design §2 `event`; full wiring completes in Phase 10).
-- [ ] 4.4 RED (Lane A): an instrumented reactor enumerates registered periodic timers — exactly
+- [x] 4.4 RED (Lane A): an instrumented reactor enumerates registered periodic timers — exactly
       one, firing every 60 s; no dedicated countdown timer (tray-presence "No timer exists solely
       to refresh the tooltip"; tray-state-sync "Only one periodic wakeup source exists"). GREEN:
       implement the 60 s `Timer::interval` source feeding `Event::Tick`.
