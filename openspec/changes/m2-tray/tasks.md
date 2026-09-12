@@ -116,20 +116,20 @@ than a long-lived tracker branch and iterates faster.
 Inactive"; Proposal slice 2 — the highest-value task in this change: every later phase's
 `TrayState` depends on this type, so it lands early and nothing downstream compiles around it)*
 
-- [ ] 2.1 Create `crates/nopass/src/state.rs` — `enum FileReading { Parsed(HelperStatus), Absent,
+- [x] 2.1 Create `crates/nopass/src/state.rs` — `enum FileReading { Parsed(HelperStatus), Absent,
       Faulted(ReadFault) }` and `enum ReadFault { Io, Malformed, UnsupportedSchema{found:u32} }`
       with **no** `Default`, `is_active()`, or `From<FileReading> for TrayState` (design §3.1,
       D3). `SUPPORTED_SCHEMA` aliases `nopass_core::state::SCHEMA_VERSION`.
-- [ ] 2.2 RED (Lane A) `state.rs`: two-stage `parse` goldens — valid schema-1; `schema: 0`;
+- [x] 2.2 RED (Lane A) `state.rs`: two-stage `parse` goldens — valid schema-1; `schema: 0`;
       `schema: 2` ⇒ `UnsupportedSchema{found:2}` **not** `Malformed`; truncated JSON; empty file;
       non-UTF-8 bytes; `active:true` with `expires:null` (tray-state-sync "Schema mismatch is
       treated identically to absence"). GREEN: implement `parse` — deserialize `{schema:u32}`
       first, then the full `HelperStatus`.
-- [ ] 2.3 RED (Lane A) `crates/nopass/tests/state_tempdir.rs` via `Layout::under(TempDir)`: file
+- [x] 2.3 RED (Lane A) `crates/nopass/tests/state_tempdir.rs` via `Layout::under(TempDir)`: file
       absent ⇒ `Absent`; unreadable dir ⇒ `Faulted(Io)`; rename-in-place while reading ⇒ never a
       torn parse (tray-state-sync "Missing state file never reads as inactive"). GREEN: implement
       `read` — `ENOENT` ⇒ `Absent`, other I/O ⇒ `Faulted(Io)`.
-- [ ] 2.4 RED (Lane A): threat-matrix "State misrepresentation" cases against `FileReading` alone
+- [x] 2.4 RED (Lane A): threat-matrix "State misrepresentation" cases against `FileReading` alone
       — absent, `schema != 1`, truncated/empty/non-UTF-8, `active:true`+expired,
       `active:true`+`expires:null` each assert the file-derived value never claims activity
       (design threat matrix row 1). GREEN: none beyond 2.2–2.3 — a named test pins the

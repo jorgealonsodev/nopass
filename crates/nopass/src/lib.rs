@@ -8,7 +8,10 @@
 //! each compiled as its own crate) can reach them through the public
 //! library API rather than a private binary-only module tree.
 //!
-//! Phase 1 (this file) declares no modules yet — `state`, `probe`,
-//! `reconcile`, `outcome`, `format`, `runner`, `invoke`, `watch`, `tray`,
-//! `notifications`, `instance`, `preflight`, `event` and `app` each land
-//! in the phase that first needs them (design.md §1, §2).
+//! Phase 2 adds `state` — the reader whose return type makes "inactive
+//! because the file was missing" unrepresentable (design.md §3.1, D3).
+//! `probe`, `reconcile`, `outcome`, `format`, `runner`, `invoke`, `watch`,
+//! `tray`, `notifications`, `instance`, `preflight`, `event` and `app`
+//! each land in the phase that first needs them (design.md §1, §2).
+
+pub mod state;
