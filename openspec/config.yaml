@@ -1,0 +1,73 @@
+schema: spec-driven
+
+context: |
+  Project: nopass — Linux system-tray utility that grants/revokes passwordless
+  sudo (NOPASSWD) for the current session's user via a privileged helper.
+  Planned stack: Rust workspace (edition 2024, MSRV 1.85+), 3 crates:
+  nopass-core (shared logic), nopass-helper (privileged binary: nix, clap,
+  tracing-journald), nopass (tray binary: ksni, notify-rust, zbus, tokio,
+  notify). Privilege escalation via polkit/pkexec. Timers via systemd-run.
+  No source code exists yet — only docs/PRD_NoPass_Linux.md (v1.1, Spanish).
+
+strict_tdd: true
+
+testing:
+  strict_tdd_requested: true
+  strict_tdd_effective: true
+  reason: >
+    Cargo workspace now exists (Phase 1 of m1-core-helper) with a passing
+    `cargo test --workspace` baseline gate (zero tests, workspace compiles
+    and passes). Strict TDD is promoted per design.md §8 "Promotion for
+    strict_tdd".
+  toolchain:
+    cargo_version: "1.85.1"
+    rustc_version: "1.85.1"
+    msrv_target: "1.85+"
+    meets_msrv: true
+    note: >
+      Versions above are the toolchain the workspace pins via rust-toolchain.toml
+      (channel "1.85", resolved by rustup to the latest 1.85.x patch) and under
+      which cargo test/build actually run. The host default stable toolchain is
+      1.98.1; it is not what this workspace builds with.
+  planned_test_command: "cargo test --workspace"
+  planned_projects:
+    - path: "crates/nopass-core"
+      stack: rust
+      note: "Pure logic (rule template, header parsing, path/state types); no UI or system deps — target for isolated unit tests."
+    - path: "crates/nopass-helper"
+      stack: rust
+      note: "Privileged binary. Unit tests via cargo test; integration tests planned in containers (Debian/Fedora) per PRD 7.2."
+    - path: "crates/nopass"
+      stack: rust
+      note: "Tray binary (ksni + zbus + tokio + notify)."
+  next_step: >
+    Done — strict_tdd promoted to true in Phase 1 of m1-core-helper.
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes (this project writes to /etc/sudoers.d/ and creates systemd units)
+    - Flag any change touching privilege boundaries (PKEXEC_UID handling, helper subcommands) as high risk
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Cross-reference docs/PRD_NoPass_Linux.md requirement IDs (RF-xx, NFR rows) where applicable
+  design:
+    - Document architecture decisions with rationale
+    - Include sequence diagrams for privileged flows (enable/disable/expire)
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Isolate nopass-core (no UI/system deps) tasks from nopass-helper (privileged) and nopass (tray) tasks
+  apply:
+    guidelines:
+      - Follow Clean/Hexagonal boundaries: nopass-core has no UI or system dependencies
+      - Helper crate MUST use #![forbid(unsafe_code)] and only fixed clap subcommands
+      - Never write directly to /etc/sudoers; always via temp file + visudo -cf + atomic rename
+    tdd: true
+    test_command: "cargo test --workspace"
+  verify:
+    test_command: "cargo test --workspace"
+    build_command: "cargo build --release"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

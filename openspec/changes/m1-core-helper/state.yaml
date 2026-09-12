@@ -1,0 +1,61 @@
+# DAG state for SDD change m1-core-helper — owned by the orchestrator
+change: m1-core-helper
+project: nopass
+created: 2026-09-12
+session:
+  pace: auto
+  artifact_store: hybrid
+  delivery_strategy: auto-chain
+  chain_strategy: stacked-to-main
+phases:
+  explore: done
+  research: done
+  proposal: done
+  specs: done
+  design: done
+  tasks: done
+  apply: in_progress
+  verify: pending
+  archive: pending
+engram_topics:
+  explore: sdd/m1-core-helper/explore
+  research: sdd/m1-core-helper/research
+  proposal: sdd/m1-core-helper/proposal
+  spec: sdd/m1-core-helper/spec
+  design: sdd/m1-core-helper/design
+  tasks: sdd/m1-core-helper/tasks
+  apply_progress: sdd/m1-core-helper/apply-progress
+  state: sdd/m1-core-helper/state
+apply_progress:
+  # Phase-level ledger. Task-level truth lives in tasks.md; this records the
+  # verification and native-attempt outcome each phase was accepted under.
+  phase_1_workspace_strict_tdd: settled-passed   # verifier PASS WITH FINDINGS, all fixed
+  phase_2_core_template_header_expiry: settled-passed   # verifier PASS WITH FINDINGS, all fixed
+  phase_3_core_paths_state_logindefs_timefmt: settled-passed   # verifier PASS, zero findings
+  phase_4_helper_cli_runner_errors_bins: settled-passed   # verifier PASS WITH FINDINGS; 2 real gaps fixed, budget reset authorized
+  phase_5_uid_checks: in_progress
+  phase_6_fileops_lock: pending
+  phase_7_timer_ops: pending
+  phase_8_statefile_journal: pending
+  phase_9_data_artifacts: pending
+  phase_10_container_lane: pending
+tasks_complete: 20/45
+workspace_tests: 98
+delivery:
+  work_units_planned: 14   # revised from 13 after Phase 4 overran its forecast
+  deferred:
+    - "1.9 commit Cargo.lock — lands when PR 1 opens; repository still has zero commits"
+  open_review_budget_issue:
+    unit: "4b — runner.rs"
+    lines: 437
+    budget: 400
+    note: >
+      Single file, so it cannot be split across two PRs without carving up the
+      CommandRunner port artificially. Needs either a recorded size:exception or
+      a deliberate split when PR 4b actually opens. Not urgent: the repository
+      has no commits and no PR exists yet.
+attempt_ledger:
+  default_max_changed_lines: 1500   # raised by maintainer decision after Phase 4 overran a 700 ceiling
+  resets_authorized:
+    - "phase 1 — 430/400, accounting artifact of a commitless repo"
+    - "phase 4 — 988/700, real lines added by verification-driven security tests"
