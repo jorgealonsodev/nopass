@@ -1,0 +1,108 @@
+# DAG state for SDD change m2-tray — owned by the orchestrator
+change: m2-tray
+project: nopass
+created: 2026-09-12
+predecessor: m1-core-helper   # archived at openspec/changes/archive/2026-09-12-m1-core-helper
+session:
+  pace: auto
+  artifact_store: hybrid
+  delivery_strategy: auto-chain
+  chain_strategy: stacked-to-main
+phases:
+  explore: done
+  research: not-selected   # the two blockers were resolved with registry evidence during explore
+  proposal: done
+  specs: done
+  design: done   # 3 unexecuted gates run by the orchestrator, all pass
+  tasks: in_progress
+  apply: pending
+  verify: pending
+  archive: pending
+engram_topics:
+  explore: sdd/m2-tray/explore
+  state: sdd/m2-tray/state
+orchestrator_resolutions:
+  - id: notify-rust-msrv
+    decision: >
+      Keep the workspace pinned at rustc 1.85 and take notify-rust 4.17 rather than 4.18.
+      Registry-verified: 4.18.0 requires 1.89.0, while 4.17.0 and everything back to 4.12.0
+      require 1.63.0. The 1.85 pin exists so distro-shipped toolchains can build this; raising
+      it to satisfy one notification crate inverts that priority. The workspace already uses
+      resolver "3", whose MSRV-aware resolution should pick 4.17 on its own — the design phase
+      MUST verify that it does and pin with a tilde requirement if it does not.
+  - id: rf03-rf09-scope
+    decision: >
+      RF-03 (full context menu) and RF-09 (autostart) are M3, not M2. PRD section 11's delivery
+      table says so and the PRD is the source of truth; the exploration brief was wrong. M2 is
+      RF-01, RF-02, RF-06 display only, RF-07, RF-08 and RF-10. M2 still needs a minimal menu to
+      be usable, and the proposal must state that subset deliberately rather than let it drift
+      into RF-03's full surface.
+
+inherited_from_m1:
+  # Contracts M2 must honour. Each is load-bearing, not a preference.
+  - id: state-file-absence-means-unknown
+    rule: >
+      A missing or stale /run/nopass/<uid>.state MUST be read as "unknown,
+      reconcile against the rule file", never as "inactive". Two M1 decisions
+      depend on it: enable returns success when only the state-file write
+      fails, because the grant is already real; and the boot sweep removes a
+      state file rather than rewriting it to inactive.
+    source: openspec/specs/helper-observability/spec.md
+  - id: helper-owns-every-write
+    rule: >
+      The tray never touches /etc/sudoers.d. Every mutation goes through the
+      helper via pkexec, and the tray interprets the typed exit codes rather
+      than inspecting the filesystem it cannot read.
+    source: openspec/specs/helper-cli/spec.md
+  - id: exit-codes-are-a-contract
+    rule: >
+      Exit codes 1 and 10 through 17 each have exactly one meaning. The tray
+      must map each to a distinct user-facing outcome; collapsing them into a
+      generic error discards the reason an operation was refused.
+    source: openspec/specs/helper-cli/spec.md
+carried_forward_unresolved:
+  - >
+      tests/containers/Containerfile.systemd, the manual full-systemd lane, has
+      never run end to end. A timer actually firing and the boot cleanup unit
+      running at boot remain unobserved. Not a gate, but the one M1 behaviour
+      claimed without being watched.
+attempt_ledger:
+  # Ordinal 1 of this change's ledger is NOT one of M2's eleven slices. It is a
+  # prerequisite fix to the M1 helper (TimerFailed's rolled_back flag reported
+  # true without checking the unlink), opened against m2-tray because M2's
+  # tray-privileged-invocation spec depends on exit 17 telling the truth.
+  # Do not count it as M2 implementation progress.
+  prerequisite_attempts:
+    - work_unit: prereq-truthful-rollback-flag-in-helper
+      belongs_to: m1-core-helper (archived)
+      reason: M2's exit-17 contract requires the flag to be truthful
+      outcome: passed
+      changed_lines: 164
+      ledger_diagnosis_is_wrong: >
+        The ledger row for this attempt records the diagnosis "probe". That is
+        not the real diagnosis; a throwaway settle used to discover the required
+        untracked-inventory digest executed for real, because there was nothing
+        to declare, and settle is idempotent per request-id so the row cannot be
+        amended. The true diagnosis: the M1 helper's TimerFailed rolled_back flag
+        now reports what the unlink actually did instead of hardcoding true; 259
+        tests pass and all three gates exit 0. Trust this field over the ledger.
+  default_max_changed_lines: 2500   # carried over from M1; forecasts there never counted verification-driven test lines
+ledger_probe_rule: >
+  Never use a throwaway settle to discover the untracked-inventory digest. It is
+  only harmless when it happens to fail on the declaration check; when there is
+  nothing to declare it settles for real and burns the attempt with a junk
+  diagnosis, which cannot be amended. Get the digest from `gentle-ai review
+  status --next-transition` or from an acquire's own error, never from a settle.
+
+routing_rule: >
+  Use the sdd-apply agent only for a phase that has tasks in tasks.md. A bounded
+  fix outside any phase goes to a delegated writer instead. The prerequisite fix
+  above was routed through sdd-apply, which was wrong: it left the agent list
+  reading as though M2 implementation had begun before tasks existed. Scope was
+  correct and no code outside the helper was touched, but in a workflow whose
+  whole value is that the state does not lie, the label matters.
+
+sequencing_rule: >
+  Never create or merge a commit while an sdd-attempt is open. The ledger
+  charges any base landing during an attempt to that attempt and it cannot be
+  recomputed. Order per phase: settle, then commit, then acquire the next.

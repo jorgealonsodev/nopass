@@ -51,9 +51,23 @@ fn unix_now() -> u64 {
 /// distinctly ("unlink(rule) + fsync(dir) + audit `rolled_back`"), since
 /// the sudoers rule genuinely existed for a moment before being undone,
 /// unlike every other rejection here where nothing was ever created.
+///
+/// A `TimerFailed { rolled_back: false }` is reported as `Error`, not
+/// `Rejected` — this is a strictly worse outcome than either of those:
+/// the rule file is still on disk (the grant is live) and nothing is
+/// scheduled to revoke it, because the thing that failed was the expiry
+/// timer itself. `Rejected` describes "nothing was created"; `RolledBack`
+/// describes "something was created and then genuinely undone". Neither
+/// is true here, so folding this case into `Rejected` would tell an
+/// operator grepping the journal that the grant is gone when it is not.
+/// `Error` is design.md §9's documented outcome value for exactly this
+/// shape of failure and was otherwise never wired into a real call site.
 fn audit_rejection(event: AuditEvent, uid: u32, user: &str, expires: Expiry, err: &HelperError) {
-    let outcome =
-        if matches!(err, HelperError::TimerFailed { rolled_back: true }) { AuditOutcome::RolledBack } else { AuditOutcome::Rejected };
+    let outcome = match err {
+        HelperError::TimerFailed { rolled_back: true } => AuditOutcome::RolledBack,
+        HelperError::TimerFailed { rolled_back: false } => AuditOutcome::Error,
+        _ => AuditOutcome::Rejected,
+    };
     journal::audit(&AuditRecord { event, uid, user, outcome, expires, exit: err.exit_code(), reason: err.audit_reason() });
 }
 
@@ -229,11 +243,15 @@ fn enable_inner(
     timer::stop(runner, binaries, uid);
 
     // Step 15: schedule a new timer only for `At`. Failure rolls the rule
-    // back and reports exit 17 (design.md §4.1 rollback table).
+    // back and reports exit 17 (design.md §4.1 rollback table). `rolled_back`
+    // is set from what `rollback_rule` actually observed, never assumed:
+    // a failed unlink here would otherwise report a rollback that never
+    // happened, while the rule file — and the live, now-unscheduled
+    // grant it represents — stays on disk.
     if let Expiry::At { epoch } = expiry {
         if timer::schedule(runner, binaries, uid, epoch).is_err() {
-            rollback_rule(layout, uid);
-            let err = HelperError::TimerFailed { rolled_back: true };
+            let rolled_back = rollback_rule(layout, uid);
+            let err = HelperError::TimerFailed { rolled_back };
             audit_rejection(AuditEvent::Enable, uid, &user, expiry, &err);
             return Err(err);
         }
@@ -268,13 +286,31 @@ fn enable_inner(
 
 /// Rollback for a step-15 `systemd-run` failure: unlink the rule just
 /// written and best-effort `fsync` the containing directory (design.md
-/// §4.1 rollback table, row 15). Both are best-effort — this function
-/// runs only from inside an error path and has nothing further to roll
-/// back to.
-fn rollback_rule(layout: &Layout, uid: u32) {
+/// §4.1 rollback table, row 15).
+///
+/// Returns whether the rule file is confirmed absent once this call
+/// returns — `true` on a successful unlink, and also `true` when the
+/// file is already gone (`NotFound`, the same idempotence
+/// `fileops::remove_rule` already applies: a file that does not exist is
+/// success, not failure). Returns `false` only for a genuine removal
+/// failure (e.g. no write permission on the containing directory),
+/// meaning the rule file — and the grant it represents — is still live.
+/// The caller reports this value verbatim as `TimerFailed.rolled_back`
+/// rather than assuming success: a hardcoded `true` here would tell the
+/// caller of `enable` that a time-boxed grant was undone when it was
+/// not, leaving a permanent grant with nothing scheduled to revoke it.
+/// The `fsync` is still attempted unconditionally and remains
+/// best-effort — this function runs only from inside an error path and
+/// has nothing further to roll back to.
+fn rollback_rule(layout: &Layout, uid: u32) -> bool {
     let path = layout.rule_path(uid);
-    let _ = std::fs::remove_file(&path);
+    let removed = match std::fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    };
     fsync_parent(&path);
+    removed
 }
 
 fn fsync_parent(path: &Path) {
@@ -1054,6 +1090,114 @@ mod tests {
         assert!(matches!(err, HelperError::TimerFailed { rolled_back: true }));
         assert_eq!(err.exit_code(), 17);
         assert!(!layout.rule_path(REAL_UID).exists(), "the rule must be rolled back on systemd-run failure");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // --- enable_inner: systemd-run failure whose OWN rollback unlink
+    // fails too — the defect this fix closes. Before this fix,
+    // `enable_inner` hardcoded `TimerFailed { rolled_back: true }`
+    // regardless of what the unlink actually did: a grant reported as
+    // rolled back while its rule file is still on disk has nothing
+    // scheduled to revoke it (the thing that failed was the expiry
+    // timer), so the user is told the operation failed while actually
+    // holding a permanent grant. `rolled_back` must reflect the unlink's
+    // real outcome, and the rule file must genuinely survive.
+    //
+    // Wraps `ScriptedRunner` to strip write permission from the sudoers
+    // directory at the exact moment the `systemd-run` call fails — AFTER
+    // `write_rule_atomic` (steps 8-13) has already renamed the rule file
+    // into place (which itself needs the directory writable), but BEFORE
+    // `rollback_rule`'s unlink runs. POSIX requires write permission on
+    // the CONTAINING directory to unlink an entry, regardless of the
+    // entry's own permissions, so this induces a genuine, non-`NotFound`
+    // `remove_file` failure inside `rollback_rule`.
+    struct RollbackUnlinkFailureRunner {
+        inner: ScriptedRunner,
+        sudoers_dir: PathBuf,
+    }
+
+    impl crate::runner::CommandRunner for RollbackUnlinkFailureRunner {
+        fn run(&self, spec: &CommandSpec) -> Result<CommandOutcome, RunnerError> {
+            if spec.program.file_name().and_then(|n| n.to_str()) == Some("systemd-run") {
+                std::fs::set_permissions(&self.sudoers_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            }
+            self.inner.run(spec)
+        }
+    }
+
+    #[test]
+    fn enable_inner_reports_rolled_back_false_and_keeps_the_file_when_the_rollback_unlink_fails() {
+        if nix::unistd::geteuid().is_root() {
+            // root bypasses the DAC permission check this test relies on
+            // to simulate an unlink failure — same convention as
+            // `disable_inner_removal_failure_propagates_and_never_stops_the_timer`.
+            return;
+        }
+        let (root, layout) = fresh_layout("enable_timer_fail_rollback_fails");
+        let binaries = fake_binaries(&root);
+        let epoch = unix_now() + 3600;
+        let scripted = ScriptedRunner::new(vec![
+            (sudo_probe_spec(&binaries, "jorge"), Ok(ok(0))),
+            (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
+            (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(5))),
+            (
+                systemd_run_spec(&binaries, REAL_UID, epoch),
+                Err(RunnerError::NonZero { program: "systemd-run".to_string(), status: 1 }),
+            ),
+        ]);
+        let runner = RollbackUnlinkFailureRunner { inner: scripted, sudoers_dir: layout.sudoers_dir().to_path_buf() };
+
+        let result = enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::At { epoch });
+
+        // Restore write permission before any assertion can fail this
+        // test early and skip cleanup, leaving a stuck temp directory.
+        std::fs::set_permissions(layout.sudoers_dir(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, HelperError::TimerFailed { rolled_back: false }),
+            "rolled_back must be false when the rollback unlink itself fails, got {err:?}"
+        );
+        assert_eq!(err.exit_code(), 17);
+        assert!(
+            layout.rule_path(REAL_UID).exists(),
+            "the rule file must survive a failed rollback — it is still a live, unscheduled grant"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enable_inner_audits_a_failed_rollback_with_the_error_outcome_not_rolled_back_or_rejected() {
+        if nix::unistd::geteuid().is_root() {
+            return;
+        }
+        let (root, layout) = fresh_layout("enable_audit_rollback_fails");
+        let binaries = fake_binaries(&root);
+        let epoch = unix_now() + 3600;
+        let scripted = ScriptedRunner::new(vec![
+            (sudo_probe_spec(&binaries, "jorge"), Ok(ok(0))),
+            (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
+            (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(5))),
+            (
+                systemd_run_spec(&binaries, REAL_UID, epoch),
+                Err(RunnerError::NonZero { program: "systemd-run".to_string(), status: 1 }),
+            ),
+        ]);
+        let runner = RollbackUnlinkFailureRunner { inner: scripted, sudoers_dir: layout.sudoers_dir().to_path_buf() };
+
+        let text = capture_audit(|| {
+            let err = enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::At { epoch })
+                .unwrap_err();
+            std::fs::set_permissions(layout.sudoers_dir(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(matches!(err, HelperError::TimerFailed { rolled_back: false }));
+        });
+
+        assert!(text.contains("EVENT=\"enable\""), "audit text: {text}");
+        assert!(text.contains("OUTCOME=\"error\""), "a failed rollback must be distinct from both a plain rejection and a successful rollback: {text}");
+        assert!(!text.contains("OUTCOME=\"rolled_back\""), "audit text: {text}");
+        assert!(!text.contains("OUTCOME=\"rejected\""), "audit text: {text}");
+        assert!(text.contains("REASON=\"timer_failed\""), "audit text: {text}");
+        assert!(text.contains("EXIT=17"), "audit text: {text}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
