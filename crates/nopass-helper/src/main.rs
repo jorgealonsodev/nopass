@@ -35,7 +35,13 @@ fn main() {
 /// Parses the real process CLI, dispatches to a handler, and maps the
 /// result to a process exit code. `Cli::parse()` itself exits 2 on a
 /// parse failure before this function's body ever runs.
+///
+/// `journal::init` (design.md §4.1 step 1) runs first, before anything
+/// else — including `Cli::parse()` — so that even a clap parse failure
+/// (exit 2) has a configured logging backend, though clap itself writes
+/// its own usage error directly to stderr rather than through `tracing`.
 fn run() -> i32 {
+    nopass_helper::journal::init();
     let cli = Cli::parse();
     let layout = Layout::system();
     let binaries = Binaries::system();

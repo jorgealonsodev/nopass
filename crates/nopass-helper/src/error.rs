@@ -60,6 +60,33 @@ impl HelperError {
             HelperError::TimerFailed { .. } => 17,
         }
     }
+
+    /// A short, stable audit-record token for this error (helper-observability
+    /// §Journald Audit Records: "a journald record distinguishes the
+    /// rejection outcome from a success record"; design.md §9: the
+    /// `REASON` field is "never raw subprocess text"). Deliberately NOT
+    /// derived from `Display`/`thiserror`'s `{0}`/`{stderr}` interpolation
+    /// — those carry raw filesystem paths and subprocess stderr, exactly
+    /// what design.md §9 forbids from an audit record.
+    pub fn audit_reason(&self) -> &'static str {
+        match self {
+            HelperError::Internal(_) => "internal",
+            HelperError::BinaryMissing { .. } => "binary_missing",
+            HelperError::Context(_) => "invocation_context",
+            HelperError::UidRejected(rejection) => match rejection {
+                UidRejection::Root => "uid_rejected_root",
+                UidRejection::BelowMin { .. } => "uid_rejected_below_min",
+                UidRejection::AboveMax { .. } => "uid_rejected_above_max",
+                UidRejection::Unknown => "uid_rejected_unknown",
+            },
+            HelperError::NotSudoer => "not_sudoer",
+            HelperError::Duration(_) => "invalid_duration",
+            HelperError::VisudoRejected { .. } => "visudo_rejected",
+            HelperError::LockBusy => "lock_busy",
+            HelperError::Fs(_) => "fs_error",
+            HelperError::TimerFailed { .. } => "timer_failed",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -115,6 +142,62 @@ mod tests {
     fn timer_failed_maps_to_exit_17_regardless_of_rollback_flag() {
         assert_eq!(HelperError::TimerFailed { rolled_back: true }.exit_code(), 17);
         assert_eq!(HelperError::TimerFailed { rolled_back: false }.exit_code(), 17);
+    }
+
+    #[test]
+    fn audit_reason_gives_a_short_stable_token_per_error_variant() {
+        assert_eq!(HelperError::Internal("boom".to_string()).audit_reason(), "internal");
+        assert_eq!(HelperError::BinaryMissing { name: "visudo" }.audit_reason(), "binary_missing");
+        assert_eq!(HelperError::Context("missing PKEXEC_UID").audit_reason(), "invocation_context");
+        assert_eq!(HelperError::UidRejected(UidRejection::Root).audit_reason(), "uid_rejected_root");
+        assert_eq!(HelperError::NotSudoer.audit_reason(), "not_sudoer");
+        assert_eq!(
+            HelperError::Duration(nopass_core::expiry::DurationError::NotInFuture).audit_reason(),
+            "invalid_duration"
+        );
+        assert_eq!(HelperError::VisudoRejected { stderr: "bad syntax".to_string() }.audit_reason(), "visudo_rejected");
+        assert_eq!(HelperError::LockBusy.audit_reason(), "lock_busy");
+        assert_eq!(HelperError::Fs("rename failed".to_string()).audit_reason(), "fs_error");
+        assert_eq!(HelperError::TimerFailed { rolled_back: true }.audit_reason(), "timer_failed");
+    }
+
+    #[test]
+    fn uid_rejected_audit_reason_carries_a_distinct_token_per_rejection_variant() {
+        // Phase 8 correction: task 5.2 widened `UidRejected` to carry the
+        // `UidRejection` payload specifically "so the rejection reason
+        // survives to the Phase 8 journald audit record" — a single
+        // shared "uid_rejected" token for all four causes discards that
+        // payload right before the audit boundary, making the widening
+        // pointless. Each cause must produce its own stable token.
+        let root = HelperError::UidRejected(UidRejection::Root).audit_reason();
+        let below_min = HelperError::UidRejected(UidRejection::BelowMin { min: 1000 }).audit_reason();
+        let above_max = HelperError::UidRejected(UidRejection::AboveMax { max: 60_000 }).audit_reason();
+        let unknown = HelperError::UidRejected(UidRejection::Unknown).audit_reason();
+
+        let tokens = [root, below_min, above_max, unknown];
+        let mut sorted = tokens.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), tokens.len(), "each UidRejection variant must produce a distinct audit token: {tokens:?}");
+
+        // Every sub-token still shares the "uid_rejected" prefix, so
+        // `journalctl -t nopass-helper | grep uid_rejected` keeps finding
+        // every uid-admission failure regardless of sub-cause.
+        for token in tokens {
+            assert!(token.starts_with("uid_rejected"), "token must share the uid_rejected prefix, got {token:?}");
+        }
+
+        // A token is a stable identifier, never a message: the numeric
+        // bound values belong to `AuditRecord`'s own fields, not baked
+        // into the reason token.
+        assert!(!below_min.contains("1000"), "token must not embed the numeric bound: {below_min:?}");
+        assert!(!above_max.contains("60000"), "token must not embed the numeric bound: {above_max:?}");
+    }
+
+    #[test]
+    fn audit_reason_never_leaks_raw_subprocess_stderr_text() {
+        let err = HelperError::VisudoRejected { stderr: "syntax error near line 4".to_string() };
+        assert_eq!(err.audit_reason(), "visudo_rejected", "must be the stable token, never the raw stderr text");
     }
 
     #[test]

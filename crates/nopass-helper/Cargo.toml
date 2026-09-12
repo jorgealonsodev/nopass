@@ -11,6 +11,9 @@ clap = { workspace = true }
 nix = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-journald = { workspace = true }
 
 [dev-dependencies]
 # Integration tests (`tests/*.rs`) are a separate crate and do not
@@ -18,3 +21,4 @@ thiserror = { workspace = true }
 # `tests/fileops_tempdir.rs` can call `nix::sys::stat::umask` for its
 # isolated umask-defeat scenario. Same version, no new features.
 nix = { workspace = true }
+tempfile = { workspace = true }
