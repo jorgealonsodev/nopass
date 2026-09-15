@@ -87,4 +87,6 @@ open, quit) while it waits.
 - GIVEN a `pkexec` invocation has not yet returned
 - WHEN the user opens the menu or selects Quit
 - THEN the tray responds without waiting for the pending invocation to complete
-- Testable via: dbus-run-session (fake spawn port that blocks until explicitly released)
+- Testable via: `cargo test`, in `tests/reactor_responsiveness.rs`. It needs no bus: the spawn
+  port is a fake that blocks until released. It previously claimed lane B, was gated on the lane B
+  environment variable and then left out of that lane's runner, so it executed in no gate at all

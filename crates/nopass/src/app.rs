@@ -46,6 +46,7 @@ use crate::reconcile::{self, TrayState, Trigger};
 use crate::runner::{CommandRunner, RunnerError, SpawnOutcome};
 use crate::state::{self};
 use crate::tray::{TrayPort, ViewModel};
+use crate::watch::Watch;
 
 /// Wall-clock seconds since the epoch — the same `now()` shape every
 /// pure function in this crate (`merge`, `countdown`, `ProbeCache::
@@ -79,6 +80,22 @@ pub struct App {
     /// so the escalation check is deliberately "the next probe result to
     /// arrive after this action", not a tagged round-trip.
     pending_escalation: Option<OutcomeKind>,
+    /// The directory `watch` is established on — `state_path`'s parent
+    /// (design.md D8).
+    run_dir: PathBuf,
+    uid: u32,
+    /// The established inotify watch, once [`maybe_retry_watch`] first
+    /// succeeds — `None` until then. Holding it here, rather than
+    /// `main::boot`'s former `std::mem::forget`, is what makes both
+    /// halves of spec `tray-state-sync`'s "Inotify Watch With
+    /// Missing-Directory Fallback" possible: retrying on the next
+    /// `Trigger::Tick` needs somewhere to remember "already established,
+    /// do not try again", and `main::boot`'s own stack frame does not
+    /// survive past its return — only `App`, which lives for the whole
+    /// process, does (verify-report.md G1).
+    ///
+    /// [`maybe_retry_watch`]: App::maybe_retry_watch
+    watch: Option<Watch>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -95,6 +112,8 @@ impl App {
         locale: Locale,
         events_tx: Sender<Event>,
         events_rx: Receiver<Event>,
+        run_dir: PathBuf,
+        uid: u32,
     ) -> App {
         App {
             user,
@@ -113,6 +132,9 @@ impl App {
             probe_cache: None,
             file_observed_at: 0,
             pending_escalation: None,
+            run_dir,
+            uid,
+            watch: None,
         }
     }
 
@@ -147,6 +169,27 @@ impl App {
     fn render(&self, now: u64) {
         let view = ViewModel::from_state(&self.user, &self.current_state, now);
         self.tray.render(&view);
+    }
+
+    /// Establishes the inotify watch if it is not already held — called
+    /// once at [`run`]'s startup and again on every `Trigger::Tick` for
+    /// as long as it keeps failing (design.md D8; spec `tray-state-sync`
+    /// "Inotify Watch With Missing-Directory Fallback"; verify-report.md
+    /// G1). `/run/nopass/` cannot un-exist once created, so a held watch
+    /// is never replaced: there is nothing a second `Watch::start` call
+    /// could fix, and starting one anyway would leak a second `notify`
+    /// backend and debounce thread for the rest of the process's life.
+    fn maybe_retry_watch(&mut self) {
+        if self.watch.is_some() {
+            return;
+        }
+        match Watch::start(&self.run_dir, self.uid, self.events_tx.clone()) {
+            Ok(watch) => self.watch = Some(watch),
+            Err(_) => eprintln!(
+                "nopass: could not watch {} yet (falling back to the 60s tick alone; will retry next tick)",
+                self.run_dir.display()
+            ),
+        }
     }
 
     /// One dedicated OS thread per probe request (design.md §4.2's
@@ -208,8 +251,23 @@ impl App {
             self.render(now);
             // design.md §6.3: an externally-triggered transition to
             // Inactive (the expiry timer rewriting the state file, an
-            // inotify event) gets its own, independent notification.
-            if trigger == Trigger::FileEvent && was_active && matches!(new_state, TrayState::Inactive) {
+            // inotify event) gets its own, independent notification —
+            // but only "without a pending tray-initiated action"
+            // (`tray-notifications` N1). `pending_escalation` is set by
+            // `handle_action_finished` and stays set until that same
+            // action's own corroborating probe consumes it
+            // (`handle_probe_finished`), so it is exactly the "an action
+            // is in flight and not yet corroborated" signal this guard
+            // needs: without it, a user-initiated Disable's own
+            // FileEvent — which can win the race against that probe
+            // (verify-report.md G3) — is misread as a spontaneous
+            // expiry, immediately after the user was already told
+            // "Passwordless sudo disabled".
+            if trigger == Trigger::FileEvent
+                && was_active
+                && matches!(new_state, TrayState::Inactive)
+                && self.pending_escalation.is_none()
+            {
                 let (summary, body) = expiry_notification();
                 self.notify.post(Category::Expiry, &summary, &body);
             }
@@ -289,7 +347,12 @@ impl App {
         let now = now();
         match event {
             Event::FileChanged => self.reconcile(Trigger::FileEvent, now),
-            Event::Tick => self.reconcile(Trigger::Tick, now),
+            Event::Tick => {
+                // spec `tray-state-sync` "retries establishing the watch
+                // on each 60 s tick" (verify-report.md G1).
+                self.maybe_retry_watch();
+                self.reconcile(Trigger::Tick, now);
+            }
             Event::MenuOpened => self.reconcile(Trigger::MenuOpened, now),
             Event::ToggleRequested => self.handle_toggle(now),
             Event::ActivateRequested => self.tray.reassert(),
@@ -323,6 +386,9 @@ fn helper_is_executable() -> bool {
 /// value can even be built (design.md §8).
 pub async fn run(mut app: App) -> i32 {
     app.announce_degraded_mode();
+    // Step 9's first attempt (design.md §6.1) — retried on every
+    // `Trigger::Tick` thereafter if it fails (verify-report.md G1).
+    app.maybe_retry_watch();
     app.reconcile(Trigger::Startup, now());
 
     while let Ok(event) = app.events_rx.recv().await {
@@ -392,6 +458,13 @@ mod tests {
             Locale::default(),
             tx,
             rx,
+            // A path that structurally cannot exist either — every test
+            // using this helper drives `App` through `handle`/`reconcile`
+            // directly, never `Event::Tick`, so `maybe_retry_watch` is
+            // never invoked against it. Tests exercising the watch retry
+            // build `App::new` directly with a real `TempDir` instead.
+            PathBuf::from("/nonexistent/nopass-app-test/run"),
+            0,
         )
     }
 
@@ -632,5 +705,281 @@ mod tests {
         let mut app = test_app(runner, tray, notify, Mode::Full);
         assert!(app.handle(Event::ActivateRequested));
         assert!(app.handle(Event::HostVanished));
+    }
+
+    // ---- G1 (verify-report.md): the watch retry on Trigger::Tick ----
+
+    /// Drains `rx` until nothing new arrives for `quiet`, counting how
+    /// many `Event::FileChanged` were seen along the way. `Trigger::Tick`
+    /// also always forces a probe (`reconcile::probe_required`), which
+    /// pushes its own `Event::ProbeFinished` into the same channel; this
+    /// lets the watch-retry test below prove both "the retried watch
+    /// works" and "at most one watch is ever live" without coupling
+    /// either assertion to that unrelated probe traffic.
+    fn count_file_changed_within(rx: &Receiver<Event>, quiet: Duration) -> usize {
+        let mut count = 0;
+        loop {
+            match recv_within(rx, quiet) {
+                Some(Event::FileChanged) => count += 1,
+                Some(_) => continue,
+                None => return count,
+            }
+        }
+    }
+
+    #[test]
+    fn a_tick_retries_the_watch_until_established_and_never_spawns_a_second_one() {
+        // G1: `Watch::start` had exactly one production call site
+        // (`main.rs`'s own startup step), which never retried, and
+        // `App` had no field to retry with. This drives the real
+        // `Event::Tick` path end to end — nothing here calls
+        // `maybe_retry_watch` directly — so removing the retry call from
+        // `Event::Tick`'s handling leaves `app.watch` `None` forever and
+        // the second assertion below fails.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_dir = tmp.path().join("nopass");
+        // Deliberately does not exist yet: a tray started before the
+        // helper's first grant on this boot, per the finding's own
+        // "real machine" scenario (verify-report.md G1).
+        let state_path = run_dir.join("1000.state");
+
+        let runner: Arc<dyn CommandRunner> = Arc::new(AnyCommandRunner::new(vec![
+            Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] }),
+            Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] }),
+            Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] }),
+        ]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let (tx, rx) = async_channel::unbounded();
+        let mut app = App::new(
+            "jorge".to_string(),
+            state_path,
+            Mode::Full,
+            tray,
+            notify,
+            runner,
+            PathBuf::from("/usr/bin/pkexec"),
+            PathBuf::from("/usr/bin/sudo"),
+            Locale::default(),
+            tx,
+            rx.clone(),
+            run_dir.clone(),
+            1000,
+        );
+
+        // Tick #1: the directory does not exist yet — the retry must
+        // fail quietly and leave the app with no watch.
+        assert!(app.handle(Event::Tick));
+        assert!(app.watch.is_none(), "no watch can exist before the run directory does");
+
+        std::fs::create_dir(&run_dir).unwrap();
+
+        // Tick #2: the directory now exists — this is the behaviour
+        // under test.
+        assert!(app.handle(Event::Tick));
+        assert!(app.watch.is_some(), "a tick after the directory appears must establish the watch");
+
+        std::fs::write(run_dir.join("1000.state"), b"{}").unwrap();
+        assert_eq!(
+            count_file_changed_within(&rx, Duration::from_millis(700)),
+            1,
+            "the retried watch must observe a write under the run directory exactly once"
+        );
+
+        // Tick #3: a watch is already held — this must not spawn a
+        // second one. A duplicate watch would double the event below.
+        assert!(app.handle(Event::Tick));
+        std::fs::write(run_dir.join("1000.state"), b"{}").unwrap();
+        assert_eq!(
+            count_file_changed_within(&rx, Duration::from_millis(700)),
+            1,
+            "a second watch would double this event"
+        );
+    }
+
+    // ---- G9 (verify-report.md): the MenuOpened cache-staleness clause
+    // and `file_observed_at`, isolated from the unrelated `Unknown`
+    // rule ----
+
+    #[test]
+    fn menu_opened_with_a_stale_cache_forces_a_probe_even_when_the_state_is_not_unknown() {
+        // F3: `reconcile::probe_required(Unknown, MenuOpened)` already
+        // returns `true` on its own, so a test that leaves `current_state`
+        // at its default `Unknown` cannot tell `maybe_probe`'s
+        // cache-staleness clause apart from that unrelated rule — which
+        // is exactly why experiment F3 (deleting the clause) stayed
+        // green despite `menu_opened_with_a_stale_cache_requests_a_probe`
+        // existing. Forcing `current_state` to `Inactive` here isolates
+        // it: `probe_required` alone now returns `false`, so only the
+        // cache-staleness clause can be responsible for the probe this
+        // test expects.
+        let runner: Arc<dyn CommandRunner> =
+            Arc::new(AnyCommandRunner::new(vec![Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] })]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let mut app = test_app(runner, tray, notify, Mode::Full);
+        let rx = app.events_rx.clone();
+        let now = now();
+
+        app.current_state = TrayState::Inactive;
+        app.probe_cache = Some(ProbeCache { value: Probe::Passwordless, taken_at: 0 });
+        app.file_observed_at = now; // taken_at(0) < file_observed_at(now) => stale.
+
+        app.maybe_probe(Trigger::MenuOpened, now);
+
+        match recv_within(&rx, SHORT) {
+            Some(Event::ProbeFinished(_)) => {}
+            other => panic!("a stale cache must force a probe on MenuOpened even when state != Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_file_event_stamps_file_observed_at_with_the_observation_time() {
+        // F5: experiment F5 deleted this one assignment and all 438
+        // tests stayed green. It is what makes design §3.3's "the probe
+        // wins is not the oldest probe wins" rule real — without it, a
+        // probe cached before an out-of-band file rewrite would stay
+        // `usable()` after that rewrite.
+        let runner: Arc<dyn CommandRunner> =
+            Arc::new(AnyCommandRunner::new(vec![Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] })]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let mut app = test_app(runner, tray, notify, Mode::Full);
+        let now = now();
+        app.file_observed_at = 0;
+
+        app.reconcile(Trigger::FileEvent, now);
+
+        assert_eq!(app.file_observed_at, now, "a FileEvent must stamp file_observed_at with its own observation time");
+    }
+
+    // ---- G5 (verify-report.md): App::render actually calling
+    // TrayPort::render ----
+
+    #[test]
+    fn a_probe_driven_state_transition_calls_render_on_the_tray_port() {
+        // F18: experiment F18 replaced `App::render`'s body so it never
+        // called `TrayPort::render`, and all 438 tests stayed green —
+        // nothing observed `App` pushing a `ViewModel` after a state
+        // change.
+        let runner: Arc<dyn CommandRunner> = Arc::new(ScriptedRunner::new(vec![]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let mut app = test_app(runner, tray.clone(), notify, Mode::Full);
+        let now = now();
+
+        assert!(tray.renders.lock().unwrap().is_empty(), "no render before any reconciliation");
+
+        // Absent file + a Passwordless probe merges to Active (row 1) —
+        // a genuine transition away from the default Unknown.
+        app.handle_probe_finished(Ok(Probe::Passwordless), now);
+
+        let renders = tray.renders.lock().unwrap();
+        assert_eq!(renders.len(), 1, "the Unknown -> Active transition must push exactly one render");
+        assert_eq!(renders[0].toggle, Some("Disable passwordless sudo"), "the pushed ViewModel must reflect the new Active state");
+    }
+
+    // ---- G3/Fix 4 (verify-report.md): the expiry-notification trigger,
+    // and the "without a pending tray-initiated action" guard ----
+
+    fn write_inactive_state_file(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            br#"{"schema":1,"uid":1000,"user":"jorge","active":false,"expires":null,"rule_path":"x","updated_at":1}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_file_event_transitioning_active_to_inactive_with_no_pending_action_announces_expiry() {
+        // E2: experiment E2 deleted the whole notification block from
+        // `reconcile` and all 438 tests stayed green — the only Lane B
+        // test naming this scenario drives the pure composer
+        // (`expiry_notification()`) directly and posts it through the
+        // notifier port itself; it never drives `App` through a state
+        // transition. This does.
+        let dir = tempfile::TempDir::new().unwrap();
+        let state_path = dir.path().join("1000.state");
+        write_inactive_state_file(&state_path);
+
+        let runner: Arc<dyn CommandRunner> =
+            Arc::new(AnyCommandRunner::new(vec![Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] })]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let (tx, rx) = async_channel::unbounded();
+        let mut app = App::new(
+            "jorge".to_string(),
+            state_path,
+            Mode::Full,
+            tray,
+            notify.clone(),
+            runner,
+            PathBuf::from("/usr/bin/pkexec"),
+            PathBuf::from("/usr/bin/sudo"),
+            Locale::default(),
+            tx,
+            rx,
+            dir.path().to_path_buf(),
+            1000,
+        );
+        app.current_state = TrayState::Active { user: Some("jorge".to_string()), expiry: None };
+
+        app.reconcile(Trigger::FileEvent, now());
+
+        assert_eq!(app.current_state, TrayState::Inactive);
+        let posts = notify.posts.lock().unwrap();
+        assert!(
+            posts.iter().any(|(c, s, _)| *c == Category::Expiry && s == "Passwordless sudo expired"),
+            "an out-of-band Active -> Inactive FileEvent transition must announce expiry: {posts:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_event_during_a_pending_action_does_not_announce_expiry() {
+        // Fix 4 / G3(a): reproduces the exact race the report names —
+        // the helper's own state-file rewrite (a FileEvent) can beat the
+        // action's own corroborating probe back to the app. Before the
+        // guard, this FileEvent-triggered Active -> Inactive transition
+        // was announced as an out-of-band expiry immediately after the
+        // user was already told "Passwordless sudo disabled".
+        let dir = tempfile::TempDir::new().unwrap();
+        let state_path = dir.path().join("1000.state");
+        write_inactive_state_file(&state_path);
+
+        let runner: Arc<dyn CommandRunner> =
+            Arc::new(AnyCommandRunner::new(vec![Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] })]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let (tx, rx) = async_channel::unbounded();
+        let mut app = App::new(
+            "jorge".to_string(),
+            state_path,
+            Mode::Full,
+            tray,
+            notify.clone(),
+            runner,
+            PathBuf::from("/usr/bin/pkexec"),
+            PathBuf::from("/usr/bin/sudo"),
+            Locale::default(),
+            tx,
+            rx,
+            dir.path().to_path_buf(),
+            1000,
+        );
+        app.current_state = TrayState::Active { user: Some("jorge".to_string()), expiry: None };
+        // A Disable action has just finished and is awaiting its own
+        // corroborating probe (design §5.1 rule 3) — exactly the
+        // "pending tray-initiated action" state the spec's guard names.
+        app.pending_escalation = Some(OutcomeKind::Revoked);
+
+        app.reconcile(Trigger::FileEvent, now());
+
+        assert_eq!(app.current_state, TrayState::Inactive, "the file event must still be reflected in the merged state");
+        let posts = notify.posts.lock().unwrap();
+        assert!(
+            !posts.iter().any(|(c, _, _)| *c == Category::Expiry),
+            "a FileEvent transition to Inactive during a pending action must not be announced as expiry: {posts:?}"
+        );
     }
 }

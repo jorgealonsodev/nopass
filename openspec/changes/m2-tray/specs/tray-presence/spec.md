@@ -23,8 +23,9 @@ MUST become visible to a present SNI host within 1 second of process start.
 
 ### Requirement: Three Visual States With Distinct Icon Names
 
-The tray MUST render exactly three visual states, each with its own icon name and
-`-symbolic` variant, and MUST switch icon on every state transition:
+The tray MUST render exactly three visual states. Each state carries two icon names, a plain
+and a `-symbolic` variant, so six names ship in total and the count of names is not the count
+of states. The tray MUST switch icon on every state transition:
 
 | State | Icon name | Symbolic |
 |---|---|---|
@@ -48,7 +49,9 @@ timer to refresh the tooltip (D2).
 #### Scenario: Tooltip renders remaining time at minute granularity
 - GIVEN an active-temporary grant expiring in 42 minutes
 - WHEN the tooltip is read
-- THEN it renders "caduca en 42 min" (or the "less than a minute" form below 60 s)
+- THEN the remaining-time element renders exactly `42 min`, and `less than a minute` below 60 s
+- AND the string is English. M2 ships one language; localisation is M3, and a Spanish literal here
+  would make the spec disagree with every shipped build until then
 - Testable via: `cargo test` (pure formatting function, no bus)
 
 #### Scenario: No timer exists solely to refresh the tooltip
@@ -80,15 +83,21 @@ moment a host appears. It MUST NOT refuse to start over this condition alone.
 
 ### Requirement: Hard Refusal With No User-Visible Channel
 
-The tray MUST print to stderr and exit non-zero, with a code distinct from RF-10's exit 0,
-only when there is no session bus reachable at all, or when neither an SNI host nor a
-notification service is reachable.
+The tray MUST print to stderr and exit non-zero, with a code distinct from RF-10's exit 0, when
+there is no session bus reachable at all, or when neither an SNI host nor a notification service
+is reachable. These are the only refusals decided by the PREFLIGHT. They are not the only
+non-zero exits: `tray-single-instance` requires exit 5 for a name-claim failure that is not
+"already taken", which happens before the preflight runs. The earlier wording said "only when"
+and contradicted that requirement.
 
 #### Scenario: No session bus at all
 - GIVEN no session bus is reachable (e.g. `DBUS_SESSION_BUS_ADDRESS` unset and unresolvable)
 - WHEN the tray starts
 - THEN it prints to stderr and exits non-zero
-- Testable via: `cargo test` (spawns the binary with the bus environment removed)
+- Testable via: lane B, `scripts/run-lane-b.sh`. NOT `cargo test`: removing the bus environment
+  does not deny a bus, because zbus derives `/run/user/<uid>/bus` from `getuid()` and reaches the
+  host's real session. Denying one needs an address that resolves to nothing, which is a
+  controlled-environment concern
 
 #### Scenario: Neither host nor notification service reachable
 - GIVEN a session bus with no StatusNotifierWatcher owner and no `org.freedesktop.Notifications`

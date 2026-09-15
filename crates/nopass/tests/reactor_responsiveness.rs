@@ -1,6 +1,6 @@
-//! Lane B (`dbus-run-session`, `NOPASS_DBUS_TESTS=1`) — tasks.md Phase 5,
-//! task 5.9; spec `tray-privileged-invocation` "Menu remains responsive
-//! during a pending authorization".
+//! Lane A (`cargo test`, no bus needed) — tasks.md Phase 5, task 5.9;
+//! spec `tray-privileged-invocation` "Menu remains responsive during a
+//! pending authorization".
 //!
 //! This does not exercise a real session bus — `tray.rs`/`instance.rs`
 //! (Phases 7/9) do not exist yet, so there is no real SNI menu-open or
@@ -16,11 +16,14 @@
 //! rather than `run_off_reactor` in isolation, per task 5.9's own GREEN
 //! note.
 //!
-//! Gated the same way the other Lane B suites in this design are: it
-//! only runs when `NOPASS_DBUS_TESTS=1` is set, and skips with a clear
-//! message otherwise (no real bus is required by this particular test,
-//! but it shares the Lane B gate so CI enables it alongside the suites
-//! that do need one).
+//! verify-report.md G2: this file used to be gated on
+//! `NOPASS_DBUS_TESTS=1` — the same gate the OTHER Lane B suites use —
+//! and was simultaneously excluded from `scripts/run-lane-b.sh`'s
+//! `--test dbus_session` filter, so it ran in neither gate: bare
+//! `cargo test --workspace` reported it `ok` in 0.00s without executing
+//! its body at all. It needs no bus, as the paragraph above already
+//! says, so the fix is the lane assignment, not the gate: it now runs
+//! unconditionally, as an ordinary Lane A test under gate 1.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -43,11 +46,6 @@ impl CommandRunner for BlockingRunner {
 
 #[test]
 fn a_pending_privileged_action_does_not_block_other_reactor_work() {
-    if std::env::var("NOPASS_DBUS_TESTS").ok().as_deref() != Some("1") {
-        eprintln!("skipping a_pending_privileged_action_does_not_block_other_reactor_work: set NOPASS_DBUS_TESTS=1 to run");
-        return;
-    }
-
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let runner: Arc<dyn CommandRunner> = Arc::new(BlockingRunner { release: Mutex::new(release_rx) });
     let spec = CommandSpec { program: std::path::PathBuf::from("/usr/bin/pkexec"), args: vec![], env: vec![] };

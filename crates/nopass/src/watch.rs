@@ -135,4 +135,46 @@ fn debounce_loop(raw_rx: mpsc::Receiver<()>, tx: Sender<Event>) {
 // a genuine Cargo integration test, exercising real inotify against a
 // `TempDir` through the public `Watch`/`Event` API, per tasks.md 4.2 and
 // the module's own rollback boundary (delete `watch.rs` AND that test
-// file together).
+// file together). The retry itself — calling `Watch::start` again on the
+// next 60 s tick when the first attempt failed — is owned and tested by
+// `App::maybe_retry_watch` (`app.rs`), the only stateful thing that can
+// hold a `Watch` handle across calls; see its own test
+// `a_tick_retries_the_watch_until_established_and_never_spawns_a_second_one`
+// (verify-report.md G1).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
+
+    /// G8 (verify-report.md): experiment E8 made `is_relevant` return
+    /// `true` for every `EventKind`, including `Access`, and every gate
+    /// stayed green. `is_relevant` had no test of its own at all — this
+    /// pins the filter as a pure function, directly, rather than relying
+    /// on a real inotify backend to happen to emit (or not emit) an
+    /// `Access` event.
+    #[test]
+    fn create_modify_and_remove_are_relevant() {
+        assert!(is_relevant(&EventKind::Create(CreateKind::Any)));
+        assert!(is_relevant(&EventKind::Modify(ModifyKind::Any)));
+        assert!(is_relevant(&EventKind::Remove(RemoveKind::Any)));
+    }
+
+    #[test]
+    fn access_events_are_never_relevant() {
+        // design's stated intent: "Access/Other are excluded so a mere
+        // read of the file never triggers reconciliation."
+        assert!(!is_relevant(&EventKind::Access(AccessKind::Any)));
+        assert!(!is_relevant(&EventKind::Access(AccessKind::Read)));
+        assert!(!is_relevant(&EventKind::Access(AccessKind::Open(notify::event::AccessMode::Any))));
+    }
+
+    #[test]
+    fn other_and_the_fully_generic_any_kind_are_never_relevant() {
+        // `EventKind::Any` is notify's own imprecise-mode catch-all,
+        // distinct from `EventKind::Other` — neither carries evidence of
+        // a write, so neither may force a probe.
+        assert!(!is_relevant(&EventKind::Other));
+        assert!(!is_relevant(&EventKind::Any));
+    }
+}

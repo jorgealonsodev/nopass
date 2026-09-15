@@ -84,6 +84,15 @@ attempt_ledger:
   # tray-privileged-invocation spec depends on exit 17 telling the truth.
   # Do not count it as M2 implementation progress.
   prerequisite_attempts:
+    - work_unit: m2-verify-remediation-watch-retry-and-seam-coverage
+      ledger_diagnosis_is_wrong: >
+        This attempt's ledger row records the diagnosis "x" for the same reason
+        ordinal 1 records "probe": a throwaway settle executed for real. The true
+        diagnosis is the commit message for this work: the watch now retries on
+        the tick, the seven uncaught adapter seams are pinned, the orphaned
+        reactor-responsiveness test runs in a gate, the expiry-after-disable race
+        is guarded, and six spec sentences were reconciled. 449 tests, five gates
+        exit 0.
     - work_unit: prereq-truthful-rollback-flag-in-helper
       belongs_to: m1-core-helper (archived)
       reason: M2's exit-17 contract requires the flag to be truthful

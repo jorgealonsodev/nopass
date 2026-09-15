@@ -54,8 +54,9 @@ MUST win, and the tray MUST update its displayed state to match the probe.
 ### Requirement: Reconciliation Runs at Four Defined Triggers
 
 The tray MUST run the `sudo -kn true` probe at startup, immediately after a completed
-enable/disable action, on every menu open, and on a 60-second timer — and at no other
-periodic interval.
+enable/disable action, on a 60-second timer, and on a menu open WHOSE CACHED READING IS STALE —
+and at no other periodic interval. A menu open with a fresh cache MUST NOT spawn a probe: each
+one costs a process, and the reading it would produce is the one already held.
 
 #### Scenario: Each trigger invokes the probe exactly once
 - GIVEN the tray in a running state

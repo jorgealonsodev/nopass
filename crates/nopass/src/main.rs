@@ -27,7 +27,6 @@ use nopass::preflight::{self, EnumerateOutcome, PolicyFileCheck, Preflight, Serv
 use nopass::reconcile::TrayState;
 use nopass::runner::SystemRunner;
 use nopass::tray::{KsniTray, TrayPort, ViewModel};
-use nopass::watch::Watch;
 
 /// `org.kde.StatusNotifierWatcher` — the tray-host protocol; used both
 /// for the KDE and the GNOME/AppIndicator-extension name (design.md §6.1
@@ -128,12 +127,14 @@ async fn boot_async() -> i32 {
     // design.md §6.1 step 8).
     spawn_host_watch(&session_conn, events_tx.clone()).await;
 
-    // Step 9: start the inotify watch on the run directory (missing ⇒
-    // reconciliation-only fallback, retried each tick — design D8).
-    match Watch::start(&run_dir, uid, events_tx.clone()) {
-        Ok(watch) => std::mem::forget(watch), // kept alive for the process's lifetime
-        Err(e) => eprintln!("nopass: could not watch {}: {e:?} (falling back to the 60s tick alone)", run_dir.display()),
-    }
+    // Step 9: the inotify watch on the run directory (missing ⇒
+    // reconciliation-only fallback, retried each tick — design D8) is
+    // established by `App` itself, not here: the first attempt happens
+    // inside `app::run`, immediately before its startup reconciliation,
+    // and every later attempt happens on `Trigger::Tick` — see
+    // `App::maybe_retry_watch`. That needs `App` to hold `run_dir`/`uid`
+    // across calls, which this function's own stack frame cannot do
+    // (verify-report.md G1).
 
     // Step 10: the sole periodic timer (design.md §3.4, event.rs's own
     // structural test).
@@ -159,6 +160,8 @@ async fn boot_async() -> i32 {
         Locale::from_env(),
         events_tx,
         events_rx,
+        run_dir,
+        uid,
     );
 
     // Step 11 (reading the state file and spawning the first probe) is

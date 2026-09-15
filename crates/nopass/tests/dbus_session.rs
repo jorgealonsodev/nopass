@@ -20,6 +20,10 @@
 //! Skipped (this file, and why) when `NOPASS_DBUS_TESTS` is unset:
 //! - `sni_properties_match_the_view_model_for_each_tray_state` (7.4)
 //! - `menu_labels_and_sensitivity_match_the_view_model_and_quit_raises_its_event` (7.5)
+//! - `activate_over_the_real_sni_wire_raises_toggle_requested` and
+//!   `about_to_show_over_the_real_dbusmenu_wire_raises_menu_opened`
+//!   (verify-report.md G4/F6 — the two `ksni` callbacks Phase 7 never
+//!   got a test of their own)
 //! - `ticks_keep_firing_on_schedule_while_a_live_tray_holds_the_bus` (7.6)
 //! - every `notifications_*`/`single_instance_*` test below (Phase 8/9)
 //! - every `real_binary_*` test below (Phase 10, tasks 10.5-10.6): each
@@ -123,6 +127,11 @@ trait Item {
     /// route `ksni`'s own `Layout::try_from(OwnedValue)` uses internally.
     #[zbus(property, name = "ToolTip")]
     fn tool_tip(&self) -> zbus::Result<OwnedValue>;
+
+    /// verify-report.md G4: the left-click toggle. `ksni`'s generated
+    /// `activate` server method takes `(x, y)`, per
+    /// `org.kde.StatusNotifierItem`'s own spec.
+    fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(interface = "com.canonical.dbusmenu", default_path = "/MenuBar")]
@@ -130,6 +139,9 @@ trait Menu {
     fn get_layout(&self, parent_id: i32, recursion_depth: i32, property_names: Vec<&str>) -> zbus::Result<(u32, RawLayout)>;
 
     fn event(&self, id: i32, event_id: &str, data: OwnedValue, timestamp: u32) -> zbus::Result<()>;
+
+    /// verify-report.md F6: `menu_about_to_show`'s wire trigger.
+    fn about_to_show(&self, id: i32) -> zbus::Result<bool>;
 }
 
 /// See [`ItemProxy::tool_tip`]'s doc comment for why this indirection
@@ -299,6 +311,93 @@ fn menu_labels_and_sensitivity_match_the_view_model_and_quit_raises_its_event() 
         )
         .await;
         assert_eq!(raised, Some(TrayEvent::Quit), "clicking Quit must raise exactly TrayEvent::Quit");
+    });
+}
+
+/// verify-report.md G4: experiment F7 emptied `ksni::Tray::activate` in
+/// `tray.rs` — the left-click toggle, PRD RF-02's headline interaction —
+/// and Lane B stayed green (15/15); the menu test above only ever drives
+/// `Quit`. This calls the real `org.kde.StatusNotifierItem.Activate`
+/// method over the wire and reads the resulting `TrayEvent` off the same
+/// channel `KsniTray::spawn` returns.
+#[test]
+fn activate_over_the_real_sni_wire_raises_toggle_requested() {
+    skip_unless_lane_b!("activate_over_the_real_sni_wire_raises_toggle_requested");
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    futures_lite::future::block_on(async {
+        let (_watcher_conn, registered) = spawn_fake_watcher().await;
+        let view = ViewModel::from_state("jorge", &TrayState::Inactive, 0);
+        let (_tray, events) = KsniTray::spawn(view).await.expect("spawn must succeed with a fake watcher present");
+        let destination = registered.lock().unwrap().last().cloned().expect("watcher must have observed a registration");
+
+        let client = zbus::Connection::session().await.expect("client must connect to the same bus");
+        let proxy = ItemProxy::builder(&client)
+            .destination(destination)
+            .expect("destination must be a valid bus name")
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await
+            .expect("item proxy must build against a live SNI object");
+
+        proxy.activate(0, 0).await.expect("Activate must be accepted");
+
+        let raised = futures_lite::future::or(
+            async { Some(events.recv().await.expect("the events channel must still be open")) },
+            async {
+                async_io::Timer::after(Duration::from_secs(2)).await;
+                None
+            },
+        )
+        .await;
+        assert_eq!(
+            raised,
+            Some(TrayEvent::ToggleRequested),
+            "Activate over the real SNI wire must raise exactly TrayEvent::ToggleRequested"
+        );
+    });
+}
+
+/// verify-report.md F6: experiment F6 stopped `menu_about_to_show` from
+/// raising `TrayEvent::MenuOpened` — one of `tray-state-sync` S3's four
+/// named reconciliation triggers — and Lane B stayed green; the menu
+/// test above never drives `AboutToShow`. This calls the real
+/// `com.canonical.dbusmenu.AboutToShow` method and reads the resulting
+/// event.
+#[test]
+fn about_to_show_over_the_real_dbusmenu_wire_raises_menu_opened() {
+    skip_unless_lane_b!("about_to_show_over_the_real_dbusmenu_wire_raises_menu_opened");
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    futures_lite::future::block_on(async {
+        let (_watcher_conn, registered) = spawn_fake_watcher().await;
+        let view = ViewModel::from_state("jorge", &TrayState::Inactive, 0);
+        let (_tray, events) = KsniTray::spawn(view).await.expect("spawn must succeed with a fake watcher present");
+        let destination = registered.lock().unwrap().last().cloned().expect("watcher must have observed a registration");
+
+        let client = zbus::Connection::session().await.expect("client must connect to the same bus");
+        let proxy = MenuProxy::builder(&client)
+            .destination(destination.to_string())
+            .expect("destination must be a valid bus name")
+            .build()
+            .await
+            .expect("menu proxy must build against a live DBusMenu object");
+
+        proxy.about_to_show(0).await.expect("AboutToShow must be accepted");
+
+        let raised = futures_lite::future::or(
+            async { Some(events.recv().await.expect("the events channel must still be open")) },
+            async {
+                async_io::Timer::after(Duration::from_secs(2)).await;
+                None
+            },
+        )
+        .await;
+        assert_eq!(
+            raised,
+            Some(TrayEvent::MenuOpened),
+            "AboutToShow over the real DBusMenu wire must raise exactly TrayEvent::MenuOpened"
+        );
     });
 }
 
