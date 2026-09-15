@@ -88,25 +88,25 @@ schema, rule-file format, or timer unit name changes anywhere in this change.
 *(Design §8 "The execution gap, named and closed"; landed first because `m3-menu-and-config`
 Phase 10's `run-lane-polkit.sh` depends on `lane_wiring.rs` existing, not as cleanup)*
 
-- [ ] 1.1 RED (Lane A): create `crates/nopass-helper/tests/lane_wiring.rs` —
+- [x] 1.1 RED (Lane A): create `crates/nopass-helper/tests/lane_wiring.rs` —
       `every_gated_test_file_is_named_by_a_runner_script`: scans `crates/*/tests/*.rs` for
       `NOPASS_[A-Z_]+_TESTS` names, asserts each appears in a script under `scripts/`, and each
       such script is named in `tests/containers/README.md`'s checklist. **This test MUST fail
       today** — `NOPASS_ROOT_TESTS` (in `crates/nopass-helper/tests/root_system.rs`, read-only)
       has no runner script — reproducing the exact gap the proposal documents.
-- [ ] 1.2 Create `scripts/run-lane-root.sh` — mirrors `scripts/run-lane-b.sh` (read-only,
+- [x] 1.2 Create `scripts/run-lane-root.sh` — mirrors `scripts/run-lane-b.sh` (read-only,
       reference only): detects the available container runtime (`docker` first on this machine,
       falls back to `podman`), builds `tests/containers/Containerfile.debian` and `.fedora`
       (read-only), runs `<runtime> run --rm -e NOPASS_ROOT_TESTS=1 <img> cargo test --workspace`
       for each, `set -euo pipefail`, exits non-zero when neither runtime is found.
-- [ ] 1.3 GREEN: `cargo test -p nopass-helper --test lane_wiring` passes; 1.1's scan now finds
+- [x] 1.3 GREEN: `cargo test -p nopass-helper --test lane_wiring` passes; 1.1's scan now finds
       `NOPASS_ROOT_TESTS` named in `scripts/run-lane-root.sh`.
-- [ ] 1.4 Negative control: RED (Lane A) `lane_wiring.rs` —
+- [x] 1.4 Negative control: RED (Lane A) `lane_wiring.rs` —
       `a_gated_test_file_naming_no_runner_script_fails_the_scan`: a fixture-style assertion
       (temp scan input, not a real crate file) proves the scan itself rejects an unwired
       `NOPASS_*_TESTS` name rather than passing vacuously. GREEN: none — this test's pass/fail
       *is* the guard; it must never pass by construction alone.
-- [ ] 1.5 Modify `tests/containers/README.md` — add the root-lane script invocation to the Quick
+- [x] 1.5 Modify `tests/containers/README.md` — add the root-lane script invocation to the Quick
       path (replacing the bare `podman build`/`podman run` pair with `bash
       scripts/run-lane-root.sh`) and add its checklist line, satisfying 1.1's second assertion.
 

@@ -20,14 +20,11 @@ bash scripts/run-lane-b.sh
 podman build -f tests/containers/Containerfile.dbus -t nopass-test-dbus .
 podman run --rm nopass-test-dbus bash scripts/run-lane-b.sh
 
-# 3. Root lane, Debian — proves the same code against a real root and a
-#    real /etc/sudoers.d.
-podman build -f tests/containers/Containerfile.debian -t nopass-test-debian .
-podman run --rm -e NOPASS_ROOT_TESTS=1 nopass-test-debian cargo test --workspace
-
-# 4. Root lane, Fedora — the second distro, catches anything Debian-specific.
-podman build -f tests/containers/Containerfile.fedora -t nopass-test-fedora .
-podman run --rm -e NOPASS_ROOT_TESTS=1 nopass-test-fedora cargo test --workspace
+# 3. Root lane, Debian + Fedora (Lane R) — proves the same code against a
+#    real root and a real /etc/sudoers.d, on both distros. Detects
+#    whichever container runtime is present (docker or podman) and builds
+#    + runs both images:
+bash scripts/run-lane-root.sh
 ```
 
 All four above must exit 0. The manual systemd lane (further down this
@@ -67,7 +64,7 @@ before_admitting`, is *not* gated: it runs everywhere and proves the gate
 itself requires both conditions together, not either alone.
 
 Inside the Debian and Fedora containers, both conditions hold (the image
-runs as root by default, and the `podman run` line above sets
+runs as root by default, and `scripts/run-lane-root.sh` sets
 `NOPASS_ROOT_TESTS=1`), so every test in `root_system.rs` actually
 executes — real `useradd`, real `/etc/sudoers.d` writes, real `visudo`.
 
@@ -169,7 +166,7 @@ exactly what a disposable, throwaway container is for.
 
 - [ ] `cargo test --workspace` and `cargo build --release` both exit 0 on your own machine.
 - [ ] `bash scripts/run-lane-b.sh` exits 0 (directly, or via `Containerfile.dbus` if your machine has no `dbus-run-session`).
-- [ ] `podman build`/`podman run` for both Debian and Fedora exit 0.
+- [ ] `bash scripts/run-lane-root.sh` exits 0 (builds and runs both the Debian and Fedora root-lane images).
 - [ ] If you touched `timer.rs`, `fileops.rs`, `lock.rs`, `checks.rs`, or `ops.rs`, you re-ran the root lane at least once — the unprivileged lane cannot see a real `root:root` file or a real `visudo`.
 - [ ] If you touched `tray.rs`, `notifications.rs`, `instance.rs`, or anything `crates/nopass/tests/dbus_session.rs` exercises, you re-ran Lane B at least once — the unprivileged lane never opens a bus connection.
 - [ ] The manual systemd lane is untouched by your change unless you specifically need to verify timer/boot behavior; it is never a release blocker, and has never been run end to end — do not cite it as passing evidence.
