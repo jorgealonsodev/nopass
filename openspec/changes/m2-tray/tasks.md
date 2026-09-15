@@ -406,16 +406,21 @@ tray-state-sync/tray-notifications; Proposal slice 10)*
 - [x] 10.6 RED (Lane A): startup binary spawn with `DBUS_SESSION_BUS_ADDRESS` unset and
       unresolvable ⇒ stderr + non-zero exit (tray-presence "No session bus at all", the
       cargo-test half). GREEN: covered by 10.5's exit-3 path exercised as a real subprocess.
-- [ ] 10.7 Wire `crates/nopass/src/main.rs` — `boot()`: `getuid`, `Layout::system()`, connect
+- [x] 10.7 Wire `crates/nopass/src/main.rs` — `boot()`: `getuid`, `Layout::system()`, connect
       session bus, serve `AppInterface`, `request_name`, run preflight, render `Unknown` and
       register the SNI item **before** any probe (step 7 < step 11 — the <1 s NFR budget),
       subscribe `NameOwnerChanged`, start the inotify watch, spawn the 60 s tick, read the state
       file and spawn the first probe (design §6.1 steps 1–11).
-- [ ] 10.8 RED (Lane A): host-absent-at-startup degraded path claims the D-Bus name, emits the
+- [x] 10.8 RED (Lane A): host-absent-at-startup degraded path claims the D-Bus name, emits the
       degraded notification, and does not exit (tray-presence "Host absent at startup, tray still
       runs"); host appears later via `NameOwnerChanged` completes registration without a restart
       in the same process (tray-presence "Host appears later..."). GREEN: covered by 10.2/10.4
       wiring; re-asserted here at the `app::run` level.
+      *Marked complete by the orchestrator after verifying the code rather than trusting a report:
+      the agent that wrote phase 10 was stopped before it marked these two. 10.7 is satisfied by
+      `main.rs::boot_async`, which carries every named step. 10.8 is satisfied by two Lane A tests
+      in `app.rs`: `no_tray_host_mode_posts_exactly_one_environment_notification_and_does_not_exit`
+      and `host_appearing_later_reasserts_the_tray_without_needing_a_restart`.*
 
 ---
 
@@ -423,12 +428,12 @@ tray-state-sync/tray-notifications; Proposal slice 10)*
 
 *(Design §9 Lane B/C, §0 G3; Proposal slice 11)*
 
-- [ ] 11.1 Create `tests/containers/Containerfile.dbus` — headless `dbus-run-session` image,
+- [x] 11.1 Create `tests/containers/Containerfile.dbus` — headless `dbus-run-session` image,
       alongside M1's images (design §9 Lane B).
-- [ ] 11.2 Modify `tests/containers/README.md` (existing, from M1) — document the
+- [x] 11.2 Modify `tests/containers/README.md` (existing, from M1) — document the
       `dbus-run-session` container invocation; wire `dbus_session.rs`'s gate to skip with a clear
       message when `dbus-run-session` is absent or `NOPASS_DBUS_TESTS` is unset.
-- [ ] 11.3 Create `tests/manual/README.md` — Lane C checklist: §10.1 panel rendering; §10.2/§10.3
+- [x] 11.3 Create `tests/manual/README.md` — Lane C checklist: §10.1 panel rendering; §10.2/§10.3
       polkit dialog + `auth_admin_keep` + `sudo -kn true` returning 0 within 1 s; visible
       notifications; keyboard menu navigation; the double-clicked-launcher path; `sudo -kn true`
       not destroying cached sudo credentials (typed-password item); `pkaction --action-id

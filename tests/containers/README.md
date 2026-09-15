@@ -1,6 +1,6 @@
 # Container test lanes
 
-Three lanes. Two are gates you run before every change. One is manual and
+Four lanes. Three are gates you run before every change. One is manual and
 you run it only when you need to see systemd itself do something.
 
 ## Quick path
@@ -10,26 +10,43 @@ you run it only when you need to see systemd itself do something.
 cargo test --workspace
 cargo build --release
 
-# 2. Root lane, Debian — proves the same code against a real root and a
+# 2. Headless session bus (Lane B) — proves D-Bus name ownership, SNI
+#    registration and notification payloads, with no desktop present.
+#    On a machine that already has `dbus-run-session` (most desktop Linux
+#    installs do), just run the script directly — no container needed:
+bash scripts/run-lane-b.sh
+#    Anywhere that isn't true — CI above all, since CI has no desktop and
+#    usually no `dbus-run-session` either — build and run the container:
+podman build -f tests/containers/Containerfile.dbus -t nopass-test-dbus .
+podman run --rm nopass-test-dbus bash scripts/run-lane-b.sh
+
+# 3. Root lane, Debian — proves the same code against a real root and a
 #    real /etc/sudoers.d.
 podman build -f tests/containers/Containerfile.debian -t nopass-test-debian .
 podman run --rm -e NOPASS_ROOT_TESTS=1 nopass-test-debian cargo test --workspace
 
-# 3. Root lane, Fedora — the second distro, catches anything Debian-specific.
+# 4. Root lane, Fedora — the second distro, catches anything Debian-specific.
 podman build -f tests/containers/Containerfile.fedora -t nopass-test-fedora .
 podman run --rm -e NOPASS_ROOT_TESTS=1 nopass-test-fedora cargo test --workspace
 ```
 
-All three above must exit 0. The manual systemd lane (step 4 below) is not
-part of this and is never required before landing a change.
+All four above must exit 0. The manual systemd lane (further down this
+document) is not part of this and is never required before landing a
+change.
 
 ## Details
 
 | Lane | Containerfile | Gate? | Runs as | What it proves |
 |---|---|---|---|---|
 | Unprivileged | none — runs directly on the host | Yes, always | your own user | Every behavior `ScriptedRunner`/`TempDir` can simulate: core logic, CLI parsing, argv assertions, atomic file ops against a temp root, the unprivileged-reconciled lock-busy/boot-sweep/binary-resolution scenarios (see below) |
+| Headless session bus (Lane B) | `Containerfile.dbus` (only needed where the host lacks `dbus-run-session`, e.g. CI) | Yes, always | your own user — no root, inside or outside a container | Everything a real private session bus can show without a desktop: `com.enfoquestic.nopass` name ownership and the `NameTaken`/nudge path, StatusNotifierItem registration and property values against a fake watcher, and notification payloads against a fake `org.freedesktop.Notifications` — never rendering, which only Lane C can prove |
 | Root, Debian/Fedora | `Containerfile.debian`, `Containerfile.fedora` | Yes, both distros | root, inside a disposable container | Everything the unprivileged lane structurally cannot: real `/etc/sudoers.d` writes with real `root:root` ownership, a real `visudo -cf`, real `getpwuid`/`getgrouplist`, a real `/run/nopass` state file, real lock contention, a real rename-failure rollback, and `expire --boot` against real files |
-| Manual, full systemd | `Containerfile.systemd` | **No** — never run in CI, never required before landing a change | root, systemd as PID 1 | The one thing neither gate lane can show: an actual `systemd-run` timer firing, `nopass-cleanup.service` running at real boot, and `journalctl -t nopass-helper` producing real records |
+| Manual, full systemd | `Containerfile.systemd` | **No** — never run in CI, never required before landing a change, and **never executed end to end in this repository** — see below | root, systemd as PID 1 | The one thing no gate lane can show: an actual `systemd-run` timer firing, `nopass-cleanup.service` running at real boot, and `journalctl -t nopass-helper` producing real records |
+
+Lane C — a real desktop session with a human watching — is not a container
+lane at all and has no row above. See `../manual/README.md`: it is the only
+place panel rendering and polkit authentication can be proven, it is never a
+gate, and its result is recorded by hand in the change's verify report.
 
 ### Why two gate lanes exist, not one
 
@@ -54,6 +71,46 @@ runs as root by default, and the `podman run` line above sets
 `NOPASS_ROOT_TESTS=1`), so every test in `root_system.rs` actually
 executes — real `useradd`, real `/etc/sudoers.d` writes, real `visudo`.
 
+### Lane B — the headless session bus
+
+`crates/nopass/tests/dbus_session.rs` is gated on `NOPASS_DBUS_TESTS=1`,
+checked per test, not on any container — the container in
+`Containerfile.dbus` exists only to supply a `dbus-run-session` binary and a
+D-Bus stack on hosts (CI, above all) that have neither. Always invoke it
+through `scripts/run-lane-b.sh`, never a bare `dbus-run-session`:
+
+```bash
+bash scripts/run-lane-b.sh
+```
+
+That script wraps `cargo test -p nopass --test dbus_session` in
+`dbus-run-session --config-file=tests/dbus/session-isolated.conf`, with
+`NOPASS_DBUS_TESTS=1` set for you. `tests/dbus/session-isolated.conf`
+matters and is not optional: a plain `dbus-run-session` still reads the
+host's `/usr/share/dbus-1/services`, so on any machine with a desktop
+installed, the *real* notification daemon gets D-Bus activated inside the
+nested session and claims `org.freedesktop.Notifications` before the
+in-test fake can — four tests depend on owning that name, or on nobody
+owning it, and silently fail otherwise. The config file omits
+`<standard_session_servicedirs/>`, so the private bus has nothing
+activatable at all. `Containerfile.dbus` is the mirror-image precaution: it
+installs a D-Bus client and daemon and nothing that ships a
+session-activatable `.service` file, so there is nothing for that same
+hazard to find even inside the container.
+
+Two independent things can make this lane skip rather than run, and each
+says so on its own:
+
+- **`NOPASS_DBUS_TESTS` unset** — every gated test in `dbus_session.rs`
+  reports `ok` (a skip is not a failure) and prints, with `--nocapture`,
+  `skipping <test name>: set NOPASS_DBUS_TESTS=1 (under dbus-run-session) to
+  run`. `scripts/run-lane-b.sh` always sets it, so this only shows up if you
+  call `cargo test` directly instead.
+- **`dbus-run-session` absent** — the wrapper binary itself, not a Rust
+  test, so it fails before `cargo test` ever starts: `bash: dbus-run-session:
+  command not found` (host) or the same, immediately, inside a container
+  that has not installed the `dbus` package.
+
 ### Why the root containers don't run systemd
 
 Neither `Containerfile.debian` nor `Containerfile.fedora` installs
@@ -66,6 +123,13 @@ is exactly what `root_system.rs`'s
 test needs: a real, unforced exit-17 rollback, not a scripted one.
 
 ### The manual systemd lane
+
+This lane is documented, and its image builds, but **the sequence below has
+never been executed end to end in this repository** — no one has run it and
+watched the timer actually fire, the boot cleanup actually run, or the
+`journalctl` output actually appear. Do not assume any part of it works
+until you have run it yourself; treat a first run as validating the
+recipe, not repeating a known-good one.
 
 ```bash
 podman build -f tests/containers/Containerfile.systemd -t nopass-test-systemd .
@@ -104,9 +168,12 @@ exactly what a disposable, throwaway container is for.
 ## Checklist
 
 - [ ] `cargo test --workspace` and `cargo build --release` both exit 0 on your own machine.
+- [ ] `bash scripts/run-lane-b.sh` exits 0 (directly, or via `Containerfile.dbus` if your machine has no `dbus-run-session`).
 - [ ] `podman build`/`podman run` for both Debian and Fedora exit 0.
 - [ ] If you touched `timer.rs`, `fileops.rs`, `lock.rs`, `checks.rs`, or `ops.rs`, you re-ran the root lane at least once — the unprivileged lane cannot see a real `root:root` file or a real `visudo`.
-- [ ] The manual systemd lane is untouched by your change unless you specifically need to verify timer/boot behavior; it is never a release blocker.
+- [ ] If you touched `tray.rs`, `notifications.rs`, `instance.rs`, or anything `crates/nopass/tests/dbus_session.rs` exercises, you re-ran Lane B at least once — the unprivileged lane never opens a bus connection.
+- [ ] The manual systemd lane is untouched by your change unless you specifically need to verify timer/boot behavior; it is never a release blocker, and has never been run end to end — do not cite it as passing evidence.
+- [ ] If your change touches `crates/nopass/` at all, Lane C's checklist (`../manual/README.md`) has been run at least once on a real desktop session and its result recorded in the verify report — it is never a gate, but it is the only place panel rendering and polkit authentication can be proven.
 
 ## Next step
 

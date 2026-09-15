@@ -1,0 +1,66 @@
+# Lane B, headless session bus (design.md, m2-tray, §9 "Testing strategy —
+# three lanes"). Proves D-Bus name ownership, StatusNotifierItem
+# registration and notification payloads against a private session bus —
+# never rendering, which only a real desktop (Lane C) can prove.
+#
+# This is the mirror-image hazard of the one tests/dbus/session-isolated.conf
+# already documents. On a host with a desktop installed, a plain
+# `dbus-run-session` still activates the real notification daemon and steals
+# `org.freedesktop.Notifications` from the fake four Lane B tests depend on
+# owning. A container has the opposite failure mode: it is easy to apt-get a
+# desktop-shaped package by accident (a notification daemon, an
+# AppIndicator/StatusNotifierWatcher host, PackageKit, upower, …) whose
+# postinst drops a `.service` file under /usr/share/dbus-1/services/, and
+# then the container has something to activate that the tests never expect
+# either. This image is deliberately narrow: a D-Bus client+daemon, a
+# toolchain, and nothing that ships a session-activatable service. Every
+# package installed below is checked against that rule, not assumed safe.
+#
+# The nested bus itself is still launched through
+# tests/dbus/session-isolated.conf (via scripts/run-lane-b.sh), which
+# additionally omits <standard_session_servicedirs/> so the bus has no
+# activatable services at all regardless of what happens to be installed —
+# belt and braces, not either/or.
+#
+# Build and run from the repository root; see tests/containers/README.md
+# for the exact invocations.
+
+FROM debian:12-slim
+
+# `dbus`: pulls in `dbus-daemon` (provides `dbus-run-session`, which spawns
+# its own private `dbus-daemon` — both binaries are required) and
+# `dbus-bin`. Nothing here is a desktop shell, a notification daemon, or a
+# StatusNotifierWatcher host, so /usr/share/dbus-1/services stays empty —
+# verified while writing this image: a fresh `debian:12-slim` with only
+# `dbus` installed (`--no-install-recommends`) has zero files under that
+# path. `build-essential`/`pkg-config`: the tray crate's dependency tree
+# (zbus, ksni, notify-rust, notify) is pure Rust for the D-Bus protocol
+# itself, but transitive crates with a `build.rs` still need a C toolchain
+# to compile, exactly as in Containerfile.debian.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        dbus \
+        ca-certificates \
+        curl \
+        build-essential \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# `--default-toolchain none`: the pinned toolchain comes from
+# rust-toolchain.toml once the workspace is copied in below: `rustup show`
+# installs exactly the channel that file pins (1.85), baking it into this
+# image layer so `podman run` needs no network access.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain none --profile minimal
+
+WORKDIR /workspace
+COPY . .
+
+RUN rustup show && cargo fetch --locked
+
+# No CMD: this image runs one bounded command at a time, chosen by the
+# caller (see tests/containers/README.md). It never boots a long-lived
+# service, so there is nothing here to leak past `podman run --rm`.
