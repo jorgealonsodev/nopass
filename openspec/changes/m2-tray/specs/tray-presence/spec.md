@@ -21,22 +21,33 @@ MUST become visible to a present SNI host within 1 second of process start.
 - Testable via: real desktop session (human-visible rendering); registration timing is
   additionally provable via dbus-run-session against a fake watcher
 
-### Requirement: Three Visual States With Distinct Icon Names
+### Requirement: Four Visual States With Distinct Icon Names
 
-The tray MUST render exactly three visual states. Each state carries two icon names, a plain
-and a `-symbolic` variant, so six names ship in total and the count of names is not the count
-of states. The tray MUST switch icon on every state transition:
+The tray MUST render exactly four visual states, and MUST switch icon on every state
+transition. Three of them are NoPass's own and ship two icon names each, a plain and a
+`-symbolic` variant, so six names ship. The fourth, `Unknown`, carries a single name and it
+is not ours: it reuses the stock freedesktop `dialog-question-symbolic`, because `Unknown`
+means the tray does not yet know whether a grant exists and a NoPass padlock in either
+position would assert something false.
+
+Of the two names each NoPass state carries, the SYMBOLIC one is the default. The plain name is
+selected only when `NOPASS_ICON_STYLE=color` is set in the tray's own environment. The table
+below lists the plain name first for readability; that order is not a precedence.
 
 | State | Icon name | Symbolic |
 |---|---|---|
 | Inactive | `nopass-locked` | `nopass-locked-symbolic` |
 | Active | `nopass-unlocked` | `nopass-unlocked-symbolic` |
 | Active-Temporary | `nopass-unlocked-timed` | `nopass-unlocked-timed-symbolic` |
+| Unknown | — | `dialog-question-symbolic` (stock, not shipped by this package) |
 
 #### Scenario: Icon name follows the merged state exactly
 - GIVEN the merged state is `Active { expiry: At(epoch) }`
 - WHEN the tray sets its icon
-- THEN it selects `nopass-unlocked-timed`, or its symbolic variant when the host requests one
+- THEN it selects `nopass-unlocked-timed`, or its symbolic variant according to the style the
+  tray resolves from its own environment
+- AND the choice is NOT negotiated with the host: StatusNotifierItem carries no such request, so
+  the style is resolved before the icon name is ever published
 - Testable via: dbus-run-session (icon name is a property read by a fake StatusNotifierWatcher)
 
 ### Requirement: Tooltip Recomputed Only At Existing Wake Points
