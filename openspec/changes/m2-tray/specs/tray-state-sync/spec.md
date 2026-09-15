@@ -71,6 +71,12 @@ The tray MUST watch `/run/nopass/` via inotify and react to a write within 1 sec
 back to reconciliation-only operation, show a warning, and retry establishing the watch on
 each 60 s tick.
 
+"On each 60 s tick" governs the RETRY, not the warning. The warning is edge-triggered: it fires
+on ENTERING the degraded state and stays silent while the tray remains in it, because a retry
+that runs every minute would otherwise produce a desktop notification every minute for a
+condition the user was already told about. Establishing a watch re-arms it, so a later loss
+warns again.
+
 #### Scenario: A state-file write is observed within budget
 - GIVEN an established inotify watch on `/run/nopass/`
 - WHEN the state file is rewritten
@@ -82,6 +88,14 @@ each 60 s tick.
 - WHEN the tray starts
 - THEN it shows a warning, relies solely on the 60 s reconciliation probe, and retries the
   watch on each tick
+- Testable via: `cargo test`
+
+#### Scenario: A persistently missing run directory warns once, not once per tick
+- GIVEN `/run/nopass/` does not exist and never appears
+- WHEN ten reconciliation ticks each retry the watch and each fail
+- THEN exactly one warning has been shown
+- AND WHEN the directory later appears, a watch is established, and the watch is lost again
+- THEN a second warning is shown, because that is a new degraded stretch
 - Testable via: `cargo test`
 
 ### Requirement: No Periodic Wakeup Beyond the 60-Second Reconciliation Tick

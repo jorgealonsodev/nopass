@@ -96,6 +96,13 @@ pub struct App {
     ///
     /// [`maybe_retry_watch`]: App::maybe_retry_watch
     watch: Option<Watch>,
+    /// Whether the "could not watch" warning has already been posted for
+    /// the CURRENT degraded stretch. The retry runs on every 60 s tick,
+    /// so without this the warning is level-triggered and a permanently
+    /// missing run directory produces a desktop popup a minute, forever,
+    /// for a condition the user was told about the first time. Cleared
+    /// the moment a watch is established, so a LATER loss warns again.
+    watch_warning_posted: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -135,6 +142,7 @@ impl App {
             run_dir,
             uid,
             watch: None,
+            watch_warning_posted: false,
         }
     }
 
@@ -213,16 +221,24 @@ impl App {
             return;
         }
         match Watch::start(&self.run_dir, self.uid, self.events_tx.clone()) {
-            Ok(watch) => self.watch = Some(watch),
-            Err(_) => self.notify.post(
-                Category::Environment,
-                "Could not watch for changes",
-                &format!(
-                    "NoPass could not set up a watch on {}. Falling back to checking every 60 \
-                     seconds; it will keep retrying.",
-                    self.run_dir.display()
-                ),
-            ),
+            Ok(watch) => {
+                self.watch = Some(watch);
+                // Out of the degraded stretch: a future one warns again.
+                self.watch_warning_posted = false;
+            }
+            Err(_) if self.watch_warning_posted => {}
+            Err(_) => {
+                self.watch_warning_posted = true;
+                self.notify.post(
+                    Category::Environment,
+                    "Could not watch for changes",
+                    &format!(
+                        "NoPass could not set up a watch on {}. Falling back to checking every 60 \
+                         seconds; it will keep retrying.",
+                        self.run_dir.display()
+                    ),
+                );
+            }
         }
     }
 
@@ -857,6 +873,85 @@ mod tests {
             count_file_changed_within(&rx, Duration::from_millis(700)),
             1,
             "at most one watch is ever live, rebuilt or not"
+        );
+    }
+
+    #[test]
+    fn a_run_directory_that_never_appears_warns_once_not_once_per_tick() {
+        // The retry loop is what makes this reachable: every 60 s tick
+        // calls `maybe_retry_watch`, and on a machine where the run
+        // directory stays missing every one of those calls used to post
+        // its own desktop notification — a popup a minute, forever, for
+        // a condition the user was already told about. The warning is
+        // about ENTERING the degraded state, so it is edge-triggered.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_dir = tmp.path().join("nopass");
+        // Never created, for the whole test.
+        let state_path = run_dir.join("1000.state");
+
+        let runner: Arc<dyn CommandRunner> = Arc::new(AnyCommandRunner::new(
+            (0..10)
+                .map(|_| Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] }))
+                .collect(),
+        ));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let (tx, rx) = async_channel::unbounded();
+        let mut app = App::new(
+            "jorge".to_string(),
+            state_path,
+            Mode::Full,
+            tray,
+            notify.clone(),
+            runner,
+            PathBuf::from("/usr/bin/pkexec"),
+            PathBuf::from("/usr/bin/sudo"),
+            Locale::default(),
+            tx,
+            rx.clone(),
+            run_dir.clone(),
+            1000,
+        );
+
+        for _ in 0..10 {
+            assert!(app.handle(Event::Tick));
+        }
+        assert!(app.watch.is_none(), "the directory never appeared, so no watch can exist");
+
+        let posts = notify.posts.lock().unwrap();
+        let warnings = posts
+            .iter()
+            .filter(|(c, s, _)| *c == Category::Environment && s == "Could not watch for changes")
+            .count();
+        assert_eq!(
+            warnings, 1,
+            "ten ticks over a permanently missing run directory must warn exactly once, not once \
+             per tick: {posts:?}"
+        );
+        drop(posts);
+
+        // Edge-triggered, not warn-once-ever. Recover, then degrade a
+        // second time: that is a NEW stretch and must warn again.
+        std::fs::create_dir(&run_dir).unwrap();
+        assert!(app.handle(Event::Tick));
+        assert!(app.watch.is_some(), "a tick after the directory appears must establish the watch");
+
+        std::fs::remove_dir_all(&run_dir).unwrap();
+        // Stand in for `Event::WatchLost`'s effect without racing real
+        // inotify; the loss path itself is pinned by
+        // `losing_the_watch_falls_back_and_warns_and_a_later_tick_reestablishes_it`.
+        app.watch = None;
+        assert!(app.handle(Event::Tick));
+
+        let posts = notify.posts.lock().unwrap();
+        let warnings = posts
+            .iter()
+            .filter(|(c, s, _)| *c == Category::Environment && s == "Could not watch for changes")
+            .count();
+        assert_eq!(
+            warnings, 2,
+            "a second degraded stretch is a new event and must warn again — suppressing it would \
+             leave the user with no notice at all: {posts:?}"
         );
     }
 
