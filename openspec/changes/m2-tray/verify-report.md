@@ -739,3 +739,31 @@ for any of them.
    experiment executed against that same gate.
 5. Reconciling a spec sentence by correcting one of its false claims can leave the remaining false
    claims looking freshly reviewed and therefore trustworthy.
+
+---
+
+## 9. Post-verdict remediation (appended by the orchestrator, not by the verifier)
+
+Everything below happened **after** §1's verdict was written, and is recorded here so the
+archive carries it. The verdict itself is unchanged; it said archive was unblocked and that H1
+was the only item worth fixing first. All five findings were fixed instead, because four of
+them were cheap once the fifth was in hand.
+
+| ID | Fix | Independently confirmed by the orchestrator |
+|---|---|---|
+| H1 | Three tests drove `/bin/sh -c` directly instead of writing a script and exec'ing it, removing the `fork()`-inherited-fd `ETXTBSY` race. `write_temp_script` deleted from both crates. | 60 runs of the two previously flaky lanes, 0 failures. Was 1 in 15. |
+| H2 | `tray-presence` P2 rewritten: four states, `Unknown`'s single stock icon name, symbolic as the stated default, and the false "when the host requests one" clause removed. | Every claim maps to an existing test in `format.rs`. |
+| H3 | The `systemd-analyze` contract tests now fail hard when the tool is absent instead of `eprintln!`-ing and returning. | Read at `timefmt.rs`; the skip path is gone. |
+| H4 | `Event::WatchLost`, raised on a `Remove` of the watched directory or a backend error, handled by dropping the watch and warning through `NotifyPort`. Inode identity was tried and rejected — this filesystem reuses inode numbers immediately. | Neutered the handler: `losing_the_watch_falls_back_and_warns_and_a_later_tick_reestablishes_it` failed, and passed again on restore. |
+| H5 | Comments corrected to say what the `watch.is_some()` guard actually buys (no needless rebuild; the `Option` assignment is what keeps one watch live), pinned by a debounce-thread-identity test. | Test added by the fixer; gates green. |
+
+### One defect this remediation introduced and closed
+
+Fixing H4 made the retry reachable on every 60 s tick, and the retry's failure warning was
+level-triggered — a desktop notification every minute, forever, on a machine where
+`/run/nopass` never appears. It is now edge-triggered and re-armed on success, and `S4` was
+extended with the scenario and the sentence that says so. Both halves fail when neutered.
+
+Gates after all of the above, read from the commands' own exit codes: **454 tests, all five
+gates exit 0.** Tasks 7.7 and 11.4 remain open and are carried forward; no Lane C result has
+been observed or inferred.
