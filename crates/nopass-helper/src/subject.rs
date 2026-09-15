@@ -22,6 +22,21 @@ pub enum UidSource {
     SystemRoot,
 }
 
+impl UidSource {
+    /// The literal `NOPASS_CONTEXT` value domain (design.md §4): the
+    /// `InvocationContext` variant names themselves, so
+    /// `journalctl NOPASS_CONTEXT=SystemRoot` matches the spec
+    /// byte-for-byte. Deliberately breaks `OUTCOME`'s snake_case
+    /// convention — an auditor greps what the requirement says, not what
+    /// a neighbouring field's casing suggests.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UidSource::Pkexec => "Pkexec",
+            UidSource::SystemRoot => "SystemRoot",
+        }
+    }
+}
+
 /// The identity a transaction acts on and the authority it acts under.
 /// Fields are private: [`Subject::pkexec`] and [`Subject::root_target`]
 /// are the only ways to build one.

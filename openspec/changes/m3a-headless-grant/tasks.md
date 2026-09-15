@@ -170,21 +170,21 @@ Phase 2 (`AuditEvent`).
 *(Design §4; Spec: helper-observability, privilege-admission "Authority confusion" threat row)* —
 depends on Phase 3 (`UidSource`).
 
-- [ ] 4.1 Modify `crates/nopass-helper/src/journal.rs` — `AuditRecord` gains `pub context:
+- [x] 4.1 Modify `crates/nopass-helper/src/journal.rs` — `AuditRecord` gains `pub context:
       UidSource` (eighth field); `journal::audit` emits `CONTEXT` after the existing `NOPASS_*`
       prefix, value domain the literal strings `Pkexec`/`SystemRoot`.
-- [ ] 4.2 RED (Lane A) `journal.rs`: a `Pkexec`-context record and a `SystemRoot`-context record
+- [x] 4.2 RED (Lane A) `journal.rs`: a `Pkexec`-context record and a `SystemRoot`-context record
       for the **same uid** are distinguishable on `CONTEXT` alone, asserted via the
       `tracing_subscriber` capture technique `journal.rs`'s own tests already use (threat matrix
       "Authority confusion in the audit trail"). GREEN: satisfied by 4.1.
-- [ ] 4.3 **The non-negotiable test**: RED (Lane A) `journal.rs` or `ops.rs` — `context` is read
+- [x] 4.3 **The non-negotiable test**: RED (Lane A) `journal.rs` or `ops.rs` — `context` is read
       exclusively from `subject.source()`, never inferred from `record.event`/the subcommand
       name: construct an `AuditRecord` whose `event` is `Grant` but whose `context` is
       `Pkexec` (a deliberately mismatched pairing built directly, bypassing any wrapper) and
       assert the emitted `CONTEXT` is `Pkexec` — proving the field has no event-based fallback
       or override anywhere in `audit()`. GREEN: none — `audit()`'s straight-through field read
       already satisfies this; the test pins that no future "helpful" derivation is added.
-- [ ] 4.4 Modify `crates/nopass-helper/src/ops.rs` (8 call sites: `enable_inner`, `disable_inner`
+- [x] 4.4 Modify `crates/nopass-helper/src/ops.rs` (8 call sites: `enable_inner`, `disable_inner`
       via `audit_rejection`, `status_inner`'s new 2.3 call, and `journal.rs`'s own test fixtures)
       — every `AuditRecord { .. }` literal adds `context: subject.source()` (or the equivalent
       once each site is retyped in Phase 7; sites not yet retyped pass `UidSource::Pkexec`

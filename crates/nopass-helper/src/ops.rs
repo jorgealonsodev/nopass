@@ -30,6 +30,7 @@ use crate::journal::{self, AuditEvent, AuditOutcome, AuditRecord};
 use crate::lock::LockGuard;
 use crate::runner::CommandRunner;
 use crate::statefile;
+use crate::subject::UidSource;
 use crate::timer;
 use crate::uid::{self, InvocationContext};
 
@@ -68,7 +69,21 @@ fn audit_rejection(event: AuditEvent, uid: u32, user: &str, expires: Expiry, err
         HelperError::TimerFailed { rolled_back: false } => AuditOutcome::Error,
         _ => AuditOutcome::Rejected,
     };
-    journal::audit(&AuditRecord { event, uid, user, outcome, expires, exit: err.exit_code(), reason: err.audit_reason() });
+    // Interim literal (design.md §4/tasks.md 4.4): this function is not
+    // yet retyped to take `Subject` — that lands in Phase 7, which routes
+    // every caller through the seam and replaces this with
+    // `subject.source()`. `Pkexec` is correct for `enable`/`disable`
+    // today; `expire`'s rejection path is corrected in that same phase.
+    journal::audit(&AuditRecord {
+        event,
+        context: UidSource::Pkexec,
+        uid,
+        user,
+        outcome,
+        expires,
+        exit: err.exit_code(),
+        reason: err.audit_reason(),
+    });
 }
 
 // --- enable -----------------------------------------------------------
@@ -272,6 +287,9 @@ fn enable_inner(
     // Step 17: journald audit record.
     journal::audit(&AuditRecord {
         event: AuditEvent::Enable,
+        // Interim literal (tasks.md 4.4): retyped to `subject.source()`
+        // in Phase 7. `enable` is always Pkexec-sourced today.
+        context: UidSource::Pkexec,
         uid,
         user: &user,
         outcome: AuditOutcome::Ok,
@@ -386,6 +404,9 @@ fn disable_inner(
     }
     journal::audit(&AuditRecord {
         event: AuditEvent::Disable,
+        // Interim literal (tasks.md 4.4): retyped to `subject.source()`
+        // in Phase 7. `disable` is always Pkexec-sourced today.
+        context: UidSource::Pkexec,
         uid,
         user: &user,
         outcome: AuditOutcome::Ok,
@@ -464,6 +485,10 @@ pub fn status(layout: &Layout) -> Result<(), HelperError> {
 fn audit_status(status: &HelperStatus) {
     journal::audit(&AuditRecord {
         event: AuditEvent::Status,
+        // Interim literal (tasks.md 4.4): retyped to `subject.source()`
+        // in Phase 7. `status` is always Pkexec-sourced today; `inspect`
+        // (SystemRoot) gains its own `AuditEvent::Inspect` call site then.
+        context: UidSource::Pkexec,
         uid: status.uid,
         user: &status.user,
         outcome: AuditOutcome::Ok,
@@ -557,6 +582,12 @@ fn expire_uid_inner(
         // still-future At is a no-op, but it is still journaled.
         journal::audit(&AuditRecord {
             event: AuditEvent::Expire,
+            // Interim literal (tasks.md 4.4): retyped to `subject.source()`
+            // in Phase 7, which routes `expire` through
+            // `Subject::root_target` (design.md §4: "expire also gains
+            // CONTEXT=SystemRoot"). Not corrected here — Phase 4 grows the
+            // schema only, it does not change `expire`'s behaviour.
+            context: UidSource::SystemRoot,
             uid,
             user: &header.user,
             outcome: AuditOutcome::SkippedNotExpired,
@@ -588,6 +619,10 @@ fn expire_uid_inner(
     }
     journal::audit(&AuditRecord {
         event: AuditEvent::Expire,
+        // Interim literal (tasks.md 4.4): retyped to `subject.source()`
+        // in Phase 7, same reasoning as the `SkippedNotExpired` call
+        // above.
+        context: UidSource::SystemRoot,
         uid,
         user: &header.user,
         outcome: AuditOutcome::Ok,
@@ -1678,6 +1713,34 @@ mod tests {
     }
 
     // --- expire_uid_inner (task 7.5) -------------------------------------
+
+    #[test]
+    fn expire_audits_itself_as_system_root_because_that_is_the_only_way_it_runs() {
+        // `expire` requires real uid 0 AND no PKEXEC_UID (uid.rs), so
+        // there is exactly one context it can ever have. This pins the
+        // constant against being set back to `Pkexec` — which it briefly
+        // was, as a uniform interim value while the field was introduced.
+        // A record claiming a pkexec context for an invocation that never
+        // had one is a lie about the single question this field was added
+        // to answer: whether the caller proved anything to polkit, or
+        // simply already had root.
+        let src = include_str!("ops.rs");
+        let body_start = src.find("fn expire_uid_inner").expect("expire_uid_inner must exist");
+        let body_end = src.find("fn expire_boot_inner").expect("expire_boot_inner must exist");
+        let expire_region = &src[body_start..body_end];
+
+        let pkexec_needle = format!("{}{}", "context: UidSource::", "Pkexec");
+        let root_needle = format!("{}{}", "context: UidSource::", "SystemRoot");
+        assert_eq!(
+            expire_region.matches(pkexec_needle.as_str()).count(),
+            0,
+            "no audit record inside expire may claim a Pkexec context"
+        );
+        assert!(
+            expire_region.matches(root_needle.as_str()).count() >= 1,
+            "expire's audit records must name SystemRoot"
+        );
+    }
 
     #[test]
     fn expire_uid_inner_absent_rule_is_a_no_op_exit_0() {

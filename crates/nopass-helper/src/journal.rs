@@ -26,6 +26,8 @@ use nopass_core::expiry::Expiry;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+use crate::subject::UidSource;
+
 /// `tracing_journald`'s syslog identifier for every record this helper
 /// emits (design.md §9, `SYSLOG_IDENTIFIER=nopass-helper`).
 pub const SYSLOG_IDENTIFIER: &str = "nopass-helper";
@@ -157,8 +159,17 @@ fn expires_field(expires: Expiry) -> String {
 /// (design.md §9: "never raw subprocess text") — `sudo`/`visudo` stderr
 /// is captured into the log only via `tracing::error!`/`debug!` call
 /// sites elsewhere, never through this struct.
+///
+/// `context` (design.md §4 "Audit schema growth — one new field") is
+/// read straight through by [`audit`] below and MUST be populated from
+/// `subject.source()` at every call site, NEVER derived from `event` —
+/// the subcommand name stopped implying the invocation context the
+/// moment `grant` and `enable` could both produce a rule for the same
+/// uid. There is no fallback path in [`audit`] that could paper over a
+/// caller getting this wrong.
 pub struct AuditRecord<'a> {
     pub event: AuditEvent,
+    pub context: UidSource,
     pub uid: u32,
     pub user: &'a str,
     pub outcome: AuditOutcome,
@@ -167,12 +178,14 @@ pub struct AuditRecord<'a> {
     pub reason: &'a str,
 }
 
-/// Emits one journald/stderr record for `record` with exactly the seven
-/// fields design.md §9 documents (before the journald layer's own
+/// Emits one journald/stderr record for `record` with exactly the eight
+/// fields design.md §4/§9 document (before the journald layer's own
 /// `NOPASS_` prefixing — see the module doc comment): `EVENT`, `UID`,
-/// `USER`, `OUTCOME`, `EXPIRES`, `EXIT`, `REASON`. `MESSAGE` and
-/// `SYSLOG_IDENTIFIER` are supplied by the `tracing`/`tracing-journald`
-/// machinery itself, not by this function.
+/// `USER`, `OUTCOME`, `EXPIRES`, `EXIT`, `REASON`, `CONTEXT`. `MESSAGE`
+/// and `SYSLOG_IDENTIFIER` are supplied by the `tracing`/`tracing-journald`
+/// machinery itself, not by this function. `CONTEXT` is read straight
+/// through from `record.context` — a plain field read, no match on
+/// `record.event` anywhere in this function.
 pub fn audit(record: &AuditRecord) {
     let expires = expires_field(record.expires);
     tracing::info!(
@@ -183,6 +196,7 @@ pub fn audit(record: &AuditRecord) {
         EXPIRES = expires.as_str(),
         EXIT = record.exit,
         REASON = record.reason,
+        CONTEXT = record.context.as_str(),
         "nopass audit event"
     );
 }
@@ -240,6 +254,7 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             audit(&AuditRecord {
                 event: AuditEvent::Enable,
+                context: UidSource::Pkexec,
                 uid: 1000,
                 user: "jorge",
                 outcome: AuditOutcome::Ok,
@@ -264,6 +279,7 @@ mod tests {
             "OUTCOME=\"ok\"",
             "EXPIRES=\"1789000000\"",
             "EXIT=0",
+            "CONTEXT=\"Pkexec\"",
         ] {
             assert!(text.contains(expected), "expected {expected:?} in captured audit output: {text}");
         }
@@ -278,6 +294,7 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             audit(&AuditRecord {
                 event: AuditEvent::Disable,
+                context: UidSource::Pkexec,
                 uid: 2000,
                 user: "ana",
                 outcome: AuditOutcome::Error,
@@ -287,6 +304,7 @@ mod tests {
             });
             audit(&AuditRecord {
                 event: AuditEvent::Expire,
+                context: UidSource::SystemRoot,
                 uid: 3000,
                 user: "sam",
                 outcome: AuditOutcome::SkippedNotExpired,
@@ -302,9 +320,105 @@ mod tests {
         assert!(text.contains("EXPIRES=\"never\""));
         assert!(text.contains("EXIT=16"));
         assert!(text.contains("REASON=\"fs_error\""));
+        assert!(text.contains("CONTEXT=\"Pkexec\""));
         assert!(text.contains("EVENT=\"expire\""));
         assert!(text.contains("OUTCOME=\"skipped_not_expired\""));
         assert!(text.contains("EXPIRES=\"reboot\""));
+        assert!(text.contains("CONTEXT=\"SystemRoot\""));
+    }
+
+    /// Shared capture helper for the task 4.2/4.3 tests below — same
+    /// technique as the two tests above, factored out because both new
+    /// tests emit several records and inspect the combined text.
+    fn capture<F: FnOnce()>(f: F) -> String {
+        let buf = SharedBuf::default();
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_writer(buf.clone()).with_ansi(false));
+        tracing::subscriber::with_default(subscriber, f);
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    // --- task 4.2: a Pkexec-context record and a SystemRoot-context
+    // record for the SAME uid are distinguishable on CONTEXT alone
+    // (helper-observability "A root-invoked grant is journaled with the
+    // SystemRoot context and its explicit target"; "Revoke and inspect
+    // are journaled the same way") ---------------------------------------
+
+    #[test]
+    fn pkexec_and_system_root_context_records_for_the_same_uid_are_distinguishable_on_context_alone() {
+        let text = capture(|| {
+            audit(&AuditRecord {
+                event: AuditEvent::Enable,
+                context: UidSource::Pkexec,
+                uid: 1000,
+                user: "jorge",
+                outcome: AuditOutcome::Ok,
+                expires: Expiry::Never,
+                exit: 0,
+                reason: "",
+            });
+            audit(&AuditRecord {
+                event: AuditEvent::Grant,
+                context: UidSource::SystemRoot,
+                uid: 1000,
+                user: "jorge",
+                outcome: AuditOutcome::Ok,
+                expires: Expiry::Never,
+                exit: 0,
+                reason: "",
+            });
+        });
+
+        assert!(text.contains("CONTEXT=\"Pkexec\""), "expected a Pkexec-context record for uid 1000: {text}");
+        assert!(text.contains("CONTEXT=\"SystemRoot\""), "expected a SystemRoot-context record for uid 1000: {text}");
+    }
+
+    // --- task 4.3: the non-negotiable test. `context` is read exclusively
+    // from `record.context` (which production code populates from
+    // `subject.source()`), NEVER inferred from `record.event` — a
+    // deliberately mismatched event/context pairing must still emit
+    // exactly the `context` value given, proving `audit()` has no
+    // event-based fallback or override anywhere. Covers pairings in BOTH
+    // directions (an event that would normally be `SystemRoot` paired
+    // with `Pkexec`, and vice versa) so a partial/event-keyed derivation
+    // cannot slip through by only checking one direction. ------------------
+
+    #[test]
+    fn context_is_read_from_the_record_never_inferred_from_its_event() {
+        let mismatched = [
+            // Grant/Revoke/Inspect/Expire are SystemRoot-context in every
+            // real invocation — deliberately paired with Pkexec here.
+            (AuditEvent::Grant, UidSource::Pkexec),
+            (AuditEvent::Revoke, UidSource::Pkexec),
+            (AuditEvent::Inspect, UidSource::Pkexec),
+            (AuditEvent::Expire, UidSource::Pkexec),
+            // Enable/Disable/Status are Pkexec-context in every real
+            // invocation — deliberately paired with SystemRoot here.
+            (AuditEvent::Enable, UidSource::SystemRoot),
+            (AuditEvent::Disable, UidSource::SystemRoot),
+            (AuditEvent::Status, UidSource::SystemRoot),
+        ];
+
+        for (event, context) in mismatched {
+            let text = capture(|| {
+                audit(&AuditRecord {
+                    event,
+                    context,
+                    uid: 5000,
+                    user: "probe",
+                    outcome: AuditOutcome::Ok,
+                    expires: Expiry::Never,
+                    exit: 0,
+                    reason: "",
+                });
+            });
+            let expected = format!("CONTEXT=\"{}\"", context.as_str());
+            assert!(
+                text.contains(&expected),
+                "event {event:?} paired with context {context:?} must still emit {expected:?} — \
+                 CONTEXT must never be derived from EVENT. Captured: {text}"
+            );
+        }
     }
 
     // --- task 2.2: new AuditEvent variants' as_str() matches the literal
