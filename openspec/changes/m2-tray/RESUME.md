@@ -11,10 +11,9 @@ existing-sudoer probe, expires grants through transient timers and a boot sweep,
 journals every outcome including refusals. Its five capabilities are the canonical
 specs in `openspec/specs/`.
 
-M2, the tray, is most of the way through implementation. **Phases 1 to 9 of 11 are
-committed and green: 412 tests, five gates.** Phase 10, the app wiring, was written
-but is NOT committed — see "Phase 10 is waiting in wip/" below. Phase 11 is the manual
-and container lanes, then formal verification, then archive.
+M2, the tray, is most of the way through implementation. **Phases 1 to 10 of 11 are
+committed and green: 438 tests, five gates.** Phase 11 is the manual and container
+lanes, then formal verification, then archive.
 
 ## First thing to do on Monday
 
@@ -33,36 +32,6 @@ A plain `dbus-run-session` fails four notification tests on any machine with a
 desktop installed, because the nested session still activates the host's real
 notification daemon. The script exists for that reason and is the only supported way
 to run that lane.
-
-## Phase 10 is waiting in `wip/`, do this before anything else
-
-Phase 10 was fully written in the previous session and reverted rather than committed,
-because one test failed and a red gate must not land. The work is preserved, not lost:
-
-- `wip/app.rs.new` and `wip/preflight.rs.new` — the two new modules, 902 lines
-- `wip/phase-10-tracked.patch` — the changes to `event.rs`, `lib.rs`, `main.rs`,
-  `tests/dbus_session.rs` and `tasks.md`
-
-To resume: copy the two `.new` files into `crates/nopass/src/` without the suffix,
-apply the patch, then fix the one failing test before committing anything.
-
-**The failing test** is `real_binary_with_no_session_bus_address_exits_3_with_a_stderr_message`
-in the lane B suite. It spawns the real binary expecting exit 3 and an error on stderr,
-and observes exit 0 with both streams empty. `main.rs` does return 3 when
-`Connection::session()` fails, so the premise is what is wrong, not the wiring. Two
-candidates, in order of likelihood:
-
-1. The test clears `DBUS_SESSION_BUS_ADDRESS`, but zbus still finds a bus another way,
-   so the connection succeeds. The process then reaches the single-instance step, finds
-   the name already owned by another test on the same bus, nudges, and exits 0 — which
-   is exactly the empty-output exit 0 observed.
-2. Genuine cross-test interference on the shared session bus, since the lane B binary
-   runs its tests in one `dbus-run-session`.
-
-Either way the fix is in the test's isolation, not in `main.rs`. The agent that wrote
-it had reached the same conclusion and was bisecting when the session ended.
-
-The other eleven lane B tests pass, and all five gates are green on the reverted tree.
 
 ## Then
 

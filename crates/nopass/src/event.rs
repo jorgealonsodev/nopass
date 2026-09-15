@@ -2,20 +2,21 @@
 //! alone drains — design.md §2 `event`, §6 "one async task owns every
 //! piece of mutable state".
 //!
-//! This file is deliberately partial. Phase 4 gives `Event` only the two
-//! variants its own adapters (`watch`, the 60 s tick) and the already-
-//! existing probe port can produce without pulling in Phase 5's `Action`
-//! (`outcome.rs`) or Phase 7-9's SNI/D-Bus adapters. The full enum —
-//! `MenuOpened`, `ToggleRequested`, `ActivateRequested`, `HostAppeared`,
-//! `HostVanished`, `ActionFinished`, `Quit` — is completed in Phase 10
-//! once every producer exists (design.md §2 `event` lists the target
-//! shape in full).
+//! Phase 4 shipped `Event` partially — only the variants its own
+//! adapters (`watch`, the 60 s tick) and the already-existing probe port
+//! could produce without pulling in Phase 5's `Action` (`outcome.rs`) or
+//! Phase 7-9's SNI/D-Bus adapters. Phase 10 completes it: `MenuOpened`,
+//! `ToggleRequested`, `ActivateRequested`, `HostAppeared`, `HostVanished`,
+//! `ActionFinished`, and `Quit` (design.md §2 `event`).
 
 use std::time::Duration;
 
 use futures_lite::{Stream, StreamExt};
 
+use crate::outcome::Action;
 use crate::probe::{Probe, ProbeError};
+use crate::runner::{RunnerError, SpawnOutcome};
+use crate::tray::TrayEvent;
 
 /// The 60 s reconciliation tick (design.md §3.4, §4 "No Periodic Wakeup
 /// Beyond the 60-Second Reconciliation Tick"). `app::run` (Phase 10) is
@@ -23,17 +24,50 @@ use crate::probe::{Probe, ProbeError};
 /// with a much shorter period so the suite never waits a real minute.
 pub const TICK_INTERVAL_SECS: u64 = 60;
 
-/// What the reactor's adapters hand to `app::run`. Every variant here is
-/// produced by code that already exists at the end of Phase 4.
-#[derive(Debug)]
+/// What the reactor's adapters hand to `app::run` (design.md §2 `event`).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// `watch::Watch` observed a debounced change under `<uid>.state`
     /// (design.md D8).
     FileChanged,
     /// One firing of the sole periodic timer this design funds.
     Tick,
+    /// `ksni::Tray::menu_about_to_show` — the root menu is about to be
+    /// displayed (`Trigger::MenuOpened`, design.md §3.4).
+    MenuOpened,
+    /// Left-click activation or the menu's toggle item (design.md's
+    /// "left-click toggle").
+    ToggleRequested,
+    /// A second instance nudged us via `org.freedesktop.Application.
+    /// Activate` (design.md §6.4).
+    ActivateRequested,
+    /// `org.kde.StatusNotifierWatcher` gained an owner after startup
+    /// (design.md §6.1 step 8).
+    HostAppeared,
+    /// `org.kde.StatusNotifierWatcher` lost its owner.
+    HostVanished,
     /// A `sudo -kn true` probe completed, successfully or not.
     ProbeFinished(Result<Probe, ProbeError>),
+    /// A privileged `pkexec` invocation completed, successfully or not
+    /// (design.md §5, §6.2).
+    ActionFinished(Action, Result<SpawnOutcome, RunnerError>),
+    /// The menu's `Quit` item, or `AppInterface`/the SNI item requesting
+    /// an orderly shutdown.
+    Quit,
+}
+
+/// Folds a [`TrayEvent`] (raised by `ksni` menu/activation callbacks,
+/// design.md §7.2) into the full [`Event`] enum — `tray.rs` deliberately
+/// stays independent of this module (see its own `TrayEvent` doc
+/// comment), so the mapping lives here instead.
+impl From<TrayEvent> for Event {
+    fn from(event: TrayEvent) -> Event {
+        match event {
+            TrayEvent::ToggleRequested => Event::ToggleRequested,
+            TrayEvent::MenuOpened => Event::MenuOpened,
+            TrayEvent::Quit => Event::Quit,
+        }
+    }
 }
 
 /// The production tick source: exactly one [`async_io::Timer::interval`]

@@ -1,2 +1,12 @@
 [toolchain]
 channel = "1.85"
+# The editor's rust-analyzer extension ships a binary built against a much
+# newer toolchain, and its proc-macro server ABI has to match the rustc that
+# compiled the macros. Against the 1.85 pin it does not, so the extension warns
+# on every open. Installing the rust-analyzer that ships WITH 1.85 gives the
+# extension a matched pair to use instead of its own.
+#
+# The pin itself is deliberate and is not the thing to change: it exists so the
+# toolchains the target distributions ship can build this. It already decided
+# notify-rust 4.17 over 4.18, and it is why the resolver selects zbus 5.13.
+components = ["rust-analyzer"]

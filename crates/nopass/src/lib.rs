@@ -30,6 +30,11 @@
 //! §2 `notifications`, §7.3). Phase 9 adds `instance` (D-Bus name
 //! ownership, `org.freedesktop.Application`, and the activation nudge,
 //! §2 `instance`, §6.4, D3).
+//!
+//! Phase 10 adds `preflight` (the startup decision table and the polkit
+//! readiness ladder, §0 G3, §8) and `app` (the single-owner reconciliation
+//! loop, §2 `app`, §6), completes `event`'s `Event` enum, and wires
+//! `main.rs`'s real startup sequence (§6.1).
 
 pub mod state;
 pub mod runner;
@@ -43,3 +48,5 @@ pub mod format;
 pub mod tray;
 pub mod notifications;
 pub mod instance;
+pub mod preflight;
+pub mod app;

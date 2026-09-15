@@ -382,28 +382,28 @@ of Scope section defers it to M4 packaging alongside `.deb`/`.rpm`/AUR. Nothing 
 *(Design §2 `preflight`/`app`, §6.1, §8, D4; Spec: tray-presence (refusal rows), degraded rows of
 tray-state-sync/tray-notifications; Proposal slice 10)*
 
-- [ ] 10.1 Create `crates/nopass/src/preflight.rs` — `struct Preflight`, `enum ServicePresence`,
+- [x] 10.1 Create `crates/nopass/src/preflight.rs` — `struct Preflight`, `enum ServicePresence`,
       `enum PolkitReadiness { Ready, ActionMissing, Indeterminate }`, `enum StartDecision`, `enum
       Mode`, `enum Refusal`, pure `decide(p)` (design §0 G3, §8).
-- [ ] 10.2 RED (Lane A) `preflight.rs`: the 4-row `sni_host`×`notifications` decision table
+- [x] 10.2 RED (Lane A) `preflight.rs`: the 4-row `sni_host`×`notifications` decision table
       (`Full`/`NoTrayHost`/`NoNotifications`/`Refuse(NoUserVisibleChannel)`) plus `NoSessionBus`;
       `Indeterminate` polkit never changes the decision (tray-presence "Degraded Start When No SNI
       Host Is Present", "Hard Refusal With No User-Visible Channel"; proposal D4). GREEN:
       implement `decide`.
-- [ ] 10.3 RED (Lane A): polkit ladder — `NameHasOwner` absent ⇒ `ActionMissing(no_authority)`;
+- [x] 10.3 RED (Lane A): polkit ladder — `NameHasOwner` absent ⇒ `ActionMissing(no_authority)`;
       `EnumerateActions` present/absent/error-or-timeout falling back to the policy-file stat;
       unresolved ⇒ `Indeterminate` (design §0 G3 — already confirmed PASS via `pkaction` by the
       orchestrator; this pins the ladder's logic against fakes, not a real bus). GREEN: implement
       the polkit ladder.
-- [ ] 10.4 Create `crates/nopass/src/app.rs` — `struct App` (single owner of all mutable state),
+- [x] 10.4 Create `crates/nopass/src/app.rs` — `struct App` (single owner of all mutable state),
       `async fn run(App) -> i32`; finish `crates/nopass/src/event.rs`'s `Event` enum (design §2
       `app`/`event`, §6).
-- [ ] 10.5 RED (Lane B, `dbus-run-session`) `dbus_session.rs`: no session bus at all ⇒ exit 3;
+- [x] 10.5 RED (Lane B, `dbus-run-session`) `dbus_session.rs`: no session bus at all ⇒ exit 3;
       neither host nor notification service present ⇒ exit 4, distinct from the SNI-host-only
       degraded case which does not exit (tray-presence "No session bus at all", "Neither host nor
       notification service reachable"). GREEN: implement the exit-code table (0/1/3/4/5, design
       §8).
-- [ ] 10.6 RED (Lane A): startup binary spawn with `DBUS_SESSION_BUS_ADDRESS` unset and
+- [x] 10.6 RED (Lane A): startup binary spawn with `DBUS_SESSION_BUS_ADDRESS` unset and
       unresolvable ⇒ stderr + non-zero exit (tray-presence "No session bus at all", the
       cargo-test half). GREEN: covered by 10.5's exit-3 path exercised as a real subprocess.
 - [ ] 10.7 Wire `crates/nopass/src/main.rs` — `boot()`: `getuid`, `Layout::system()`, connect

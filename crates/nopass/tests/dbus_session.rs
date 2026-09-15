@@ -22,6 +22,9 @@
 //! - `menu_labels_and_sensitivity_match_the_view_model_and_quit_raises_its_event` (7.5)
 //! - `ticks_keep_firing_on_schedule_while_a_live_tray_holds_the_bus` (7.6)
 //! - every `notifications_*`/`single_instance_*` test below (Phase 8/9)
+//! - every `real_binary_*` test below (Phase 10, tasks 10.5-10.6): each
+//!   spawns the actual compiled `nopass` binary as a subprocess against
+//!   this file's shared bus
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -824,5 +827,117 @@ fn ten_rapid_activations_produce_exactly_one_notification_and_zero_pkexec_spawns
         assert_eq!(notify.posts.lock().unwrap().len(), 1, "ten rapid activations must produce exactly one notification");
 
         release_service_name(&conn1).await;
+    });
+}
+
+// =====================================================================
+// Phase 10 — Startup preflight, degraded modes, main wiring (tasks.md
+// 10.5-10.6; design.md §6.1, §8; spec `tray-presence` refusal rows)
+// =====================================================================
+
+fn nopass_binary() -> std::process::Command {
+    std::process::Command::new(env!("CARGO_BIN_EXE_nopass"))
+}
+
+/// Task 10.6 (the cargo-test half) + task 10.5's "no session bus at all"
+/// row: with `DBUS_SESSION_BUS_ADDRESS` unset and unresolvable, the real
+/// binary must fail fast with a message on stderr and a non-zero exit —
+/// exactly exit 3 (design.md §8).
+#[test]
+fn real_binary_with_no_session_bus_address_exits_3_with_a_stderr_message() {
+    skip_unless_lane_b!("real_binary_with_no_session_bus_address_exits_3_with_a_stderr_message");
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    // An empty environment does NOT deny a session bus, and assuming it did
+    // cost this suite a leaked process. With both DBUS_SESSION_BUS_ADDRESS and
+    // XDG_RUNTIME_DIR absent, zbus derives `/run/user/<uid>/bus` from getuid()
+    // and connects to the developer's REAL desktop session — not the nested bus
+    // this lane runs under. The binary then legitimately started, claimed the
+    // well-known name on that real bus, registered a tray item and ran forever,
+    // which both hung `output()` and left a tray process on the user's machine.
+    //
+    // Denying a bus takes an address that resolves to nothing.
+    let mut cmd = nopass_binary();
+    cmd.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/nopass-test-no-bus");
+    cmd.env_remove("XDG_RUNTIME_DIR");
+    cmd.env_remove("DBUS_STARTER_ADDRESS");
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    // Bounded wait. If the premise ever breaks again the child is killed and
+    // the test says so, rather than blocking forever and leaking a tray.
+    let mut child = cmd.spawn().expect("spawn the real nopass binary");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait().expect("try_wait must not itself fail") {
+            Some(status) => break status,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "the binary did not exit within 10s with an unreachable bus address; \
+                     it most likely reached a real session bus and started for real"
+                );
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    let output = child.wait_with_output().expect("collect the child's output");
+
+    assert_eq!(status.code(), Some(3), "no reachable session bus must exit exactly 3: {output:?}");
+    assert!(!output.stderr.is_empty(), "a session-bus connection failure must be reported on stderr");
+}
+
+/// Task 10.5: with a real session bus present but neither
+/// `org.kde.StatusNotifierWatcher` nor `org.freedesktop.Notifications`
+/// owned by anyone, the real binary must refuse with exit 4 — distinct
+/// from exit 3 and from the SNI-host-only degraded case below, which
+/// does not exit at all (spec `tray-presence` "Hard Refusal With No
+/// User-Visible Channel").
+#[test]
+fn real_binary_with_neither_host_nor_notifications_exits_4() {
+    skip_unless_lane_b!("real_binary_with_neither_host_nor_notifications_exits_4");
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Deliberately no fake watcher, no fake notifications daemon —
+    // `DBUS_SESSION_BUS_ADDRESS` resolves (dbus-run-session provides a
+    // real bus), but no one owns either well-known name.
+    let output = nopass_binary().output().expect("spawn the real nopass binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "a live session bus with no possible user-visible channel must exit exactly 4: {output:?}"
+    );
+}
+
+/// Task 10.5: the SNI-host-only degraded case — `org.kde.
+/// StatusNotifierWatcher` present, `org.freedesktop.Notifications`
+/// absent — must NOT exit at all (design.md §8's `Run(NoNotifications)`
+/// row), unlike the "neither present" case above which exits 4
+/// immediately. The process is killed once this is observed; nothing
+/// here asserts on its rendering (Lane B proves protocol, not looks —
+/// design.md §9).
+#[test]
+fn real_binary_with_only_the_sni_host_present_keeps_running_degraded() {
+    skip_unless_lane_b!("real_binary_with_only_the_sni_host_present_keeps_running_degraded");
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    futures_lite::future::block_on(async {
+        let (_watcher_conn, _registered) = spawn_fake_watcher().await;
+
+        let mut child = nopass_binary().spawn().expect("spawn the real nopass binary");
+
+        // Give the process time to run its full startup sequence (well
+        // above the <1s NFR budget) and confirm it is still alive rather
+        // than having exited (degraded, not refused).
+        async_io::Timer::after(Duration::from_secs(2)).await;
+        match child.try_wait().expect("try_wait must not itself fail") {
+            None => {}
+            Some(status) => panic!("a present SNI host with no notification service must not exit; got {status:?}"),
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
     });
 }
