@@ -117,13 +117,13 @@ Phase 10's `run-lane-polkit.sh` depends on `lane_wiring.rs` existing, not as cle
 *(Design §4; Spec: helper-observability "Journald Audit Records")* — depends on Phase 1 only for
 lane discipline, not code.
 
-- [ ] 2.1 Modify `crates/nopass-helper/src/journal.rs` — `AuditEvent` gains `Grant`, `Revoke`,
+- [x] 2.1 Modify `crates/nopass-helper/src/journal.rs` — `AuditEvent` gains `Grant`, `Revoke`,
       `Inspect` (`as_str()` → `grant`/`revoke`/`inspect`); correct the stale doc comment at
       `journal.rs:66-67` (read-only reference for the current text) that scopes `journal::audit`
       to `enable`/`disable`/`expire` only.
-- [ ] 2.2 RED (Lane A) `journal.rs`: each new `AuditEvent` variant's `as_str()` matches the
+- [x] 2.2 RED (Lane A) `journal.rs`: each new `AuditEvent` variant's `as_str()` matches the
       literal token the spec names (`grant`, `revoke`, `inspect`). GREEN: satisfied by 2.1.
-- [ ] 2.3 **Behaviour change, flagged explicitly — not silently resolved**: `AuditEvent::Status`
+- [x] 2.3 **Behaviour change, flagged explicitly — not silently resolved**: `AuditEvent::Status`
       has existed since M1 and is emitted from nowhere (`journal.rs:63-74` doc comment,
       read-only reference). This phase wires it: `ops::status` (`ops.rs:415`, read-only
       reference for current signature) gains a `journal::audit` call with
@@ -131,10 +131,10 @@ lane discipline, not code.
       every `status` invocation becomes audited for the first time. RED (Lane A) `ops.rs`: a
       successful `status` call now produces exactly one `AuditRecord` with `event: Status`,
       `outcome: Ok`. GREEN: add the `journal::audit` call to `ops::status`.
-- [ ] 2.4 Create `fn audit_event_for(cmd: &Cmd) -> AuditEvent` in `journal.rs` — one exhaustive
+- [x] 2.4 Create `fn audit_event_for(cmd: &Cmd) -> AuditEvent` in `journal.rs` — one exhaustive
       match arm per `Cmd` variant, **no wildcard arm**, so an eighth subcommand added later
       without an arm fails to compile (threat matrix "Unaudited new subcommand").
-- [ ] 2.5 RED (Lane A) `journal.rs`: `audit_event_for` is total (every `Cmd` variant maps) and
+- [x] 2.5 RED (Lane A) `journal.rs`: `audit_event_for` is total (every `Cmd` variant maps) and
       injective (no two variants map to the same `AuditEvent`) over the current seven-variant
       surface. GREEN: satisfied by 2.4; test documents the compile-time guarantee is also
       runtime-checked.

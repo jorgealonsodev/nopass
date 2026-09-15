@@ -60,17 +60,28 @@ pub fn init() {
     }
 }
 
-/// Which transaction produced an audit record (`NOPASS_EVENT`). `Status`
-/// is part of the documented value domain (design.md §9) but is not
-/// currently emitted anywhere: `ops::status` (design.md §4.5) takes no
-/// lock and performs no write, and Phase 8's wiring (tasks.md 8.3) scopes
-/// `journal::audit` calls to `enable`/`disable`/`expire` only.
+/// Which transaction produced an audit record (`NOPASS_EVENT`). The
+/// modified helper-observability "Journald Audit Records" requirement
+/// binds by "every outcome-producing subcommand", not by an enumerated
+/// name list, precisely so a future subcommand cannot ship unaudited by
+/// omission — `audit_event_for` below is the exhaustive, wildcard-free
+/// map that enforces this at compile time. `Status` has been part of the
+/// documented value domain since M1; `ops::status` (design.md §4.5) now
+/// emits it on every successful call, closing the gap where it used to
+/// be emitted from nowhere. `Grant`, `Revoke`, and `Inspect` are the
+/// three headless root-context subcommands `m3a-headless-grant` adds
+/// (design.md §1); their own `Cmd` variants and `journal::audit` call
+/// sites land in a later phase of that change, so `audit_event_for`
+/// cannot yet reach them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEvent {
     Enable,
     Disable,
     Expire,
     Status,
+    Grant,
+    Revoke,
+    Inspect,
 }
 
 impl AuditEvent {
@@ -80,7 +91,29 @@ impl AuditEvent {
             AuditEvent::Disable => "disable",
             AuditEvent::Expire => "expire",
             AuditEvent::Status => "status",
+            AuditEvent::Grant => "grant",
+            AuditEvent::Revoke => "revoke",
+            AuditEvent::Inspect => "inspect",
         }
+    }
+}
+
+/// Total, wildcard-free map from every `Cmd` variant to the `AuditEvent`
+/// it is audited under (design.md §4 "Growth that closes the omission
+/// hole"; threat matrix "Unaudited new subcommand"). No wildcard arm
+/// means a subcommand added to `Cmd` without a corresponding arm here
+/// fails to compile, rather than silently shipping unaudited. Over the
+/// `Cmd` surface as of this phase (`Enable`, `Disable`, `Status`,
+/// `Expire`), this map is total by construction and injective into the
+/// now-seven-variant `AuditEvent` domain — `Grant`/`Revoke`/`Inspect`
+/// stay unreachable here until a later phase of `m3a-headless-grant`
+/// adds their `Cmd` variants and this match gains their arms.
+pub fn audit_event_for(cmd: &crate::cli::Cmd) -> AuditEvent {
+    match cmd {
+        crate::cli::Cmd::Enable { .. } => AuditEvent::Enable,
+        crate::cli::Cmd::Disable => AuditEvent::Disable,
+        crate::cli::Cmd::Status => AuditEvent::Status,
+        crate::cli::Cmd::Expire { .. } => AuditEvent::Expire,
     }
 }
 
@@ -272,5 +305,43 @@ mod tests {
         assert!(text.contains("EVENT=\"expire\""));
         assert!(text.contains("OUTCOME=\"skipped_not_expired\""));
         assert!(text.contains("EXPIRES=\"reboot\""));
+    }
+
+    // --- task 2.2: new AuditEvent variants' as_str() matches the literal
+    // token the spec names (helper-observability "Journald Audit
+    // Records") ---------------------------------------------------------
+
+    #[test]
+    fn grant_revoke_inspect_as_str_match_the_spec_literal_tokens() {
+        assert_eq!(AuditEvent::Grant.as_str(), "grant");
+        assert_eq!(AuditEvent::Revoke.as_str(), "revoke");
+        assert_eq!(AuditEvent::Inspect.as_str(), "inspect");
+    }
+
+    // --- task 2.5: `audit_event_for` is total (every `Cmd` variant maps)
+    // and injective (no two `Cmd` variants map to the same `AuditEvent`)
+    // over the current `Cmd` surface, mapped into the now-seven-variant
+    // `AuditEvent` domain (design.md §4 "Growth that closes the omission
+    // hole") -------------------------------------------------------------
+
+    #[test]
+    fn audit_event_for_is_total_and_injective_over_the_current_cmd_surface() {
+        let cmds = [
+            crate::cli::Cmd::Enable { until: None, until_reboot: false },
+            crate::cli::Cmd::Disable,
+            crate::cli::Cmd::Status,
+            crate::cli::Cmd::Expire { uid: Some(1000), boot: false },
+        ];
+        let mapped: Vec<AuditEvent> = cmds.iter().map(audit_event_for).collect();
+        assert_eq!(mapped, vec![AuditEvent::Enable, AuditEvent::Disable, AuditEvent::Status, AuditEvent::Expire]);
+
+        // Injective: no two distinct mapped events collide.
+        for (i, a) in mapped.iter().enumerate() {
+            for (j, b) in mapped.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "audit_event_for must be injective, but index {i} and {j} collided");
+                }
+            }
+        }
     }
 }

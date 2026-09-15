@@ -412,6 +412,30 @@ pub fn resolve_username(passwd_lookup: Result<String, HelperError>, header: Opti
 
 /// Production `status` entry point (helper-observability §HelperStatus
 /// JSON Contract; design.md §4.5).
+///
+/// **Behaviour change, flagged explicitly (m3a-headless-grant tasks.md
+/// 2.3) — not silently resolved.** `AuditEvent::Status` has existed
+/// since M1 and, until this call, was emitted from nowhere: `status`
+/// took no lock and performed no write, so it was never routed through
+/// `journal::audit`. The modified helper-observability "Journald Audit
+/// Records" requirement now binds by "every outcome-producing
+/// subcommand", not by an enumerated name list — `status` is one such
+/// subcommand, so every invocation is audited starting with this
+/// change. This IS a change to already-shipped behaviour: every
+/// `status` call now writes one journald record where before it wrote
+/// none. Volume was checked, not assumed, before this call was added:
+/// the tray's 60-second reconciliation tick reads
+/// `/run/nopass/<uid>.state` directly via `std::fs::read`
+/// (`crates/nopass/src/state.rs::read`/`crates/nopass/src/app.rs::reconcile`)
+/// and probes liveness with `sudo -k -n true`
+/// (`crates/nopass/src/probe.rs`); its `Action` enum
+/// (`crates/nopass/src/outcome.rs`) has only `Enable`/`Disable` variants
+/// and `pkexec_spec` (`crates/nopass/src/invoke.rs`) never builds a
+/// `status` argv. The tray never invokes `nopass-helper status` through
+/// `pkexec` at all, on a cadence or otherwise, so this wiring does not
+/// create a periodic journald write from the tray's own reconciliation
+/// loop — only a direct, manual `nopass-helper status` invocation is
+/// audited.
 pub fn status(layout: &Layout) -> Result<(), HelperError> {
     let pkexec_uid = std::env::var("PKEXEC_UID").ok();
     let real_uid = nix::unistd::getuid().as_raw();
@@ -420,8 +444,33 @@ pub fn status(layout: &Layout) -> Result<(), HelperError> {
         unreachable!("Cmd::Status always resolves to InvocationContext::Pkexec")
     };
     let status = status_inner(layout, uid, unix_now());
+    audit_status(&status);
     print!("{}", status.to_json_line());
     Ok(())
+}
+
+/// Emits the one journald/stderr `AuditEvent::Status` record a
+/// successful `status` call now produces (helper-observability
+/// "Journald Audit Records"), extracted as its own function — like
+/// `resolve_username` above — so it is unit-testable independently of
+/// `status`'s live wrapper, whose uid resolution depends on
+/// `PKEXEC_UID`/`nix::unistd::getuid()` and therefore cannot be driven
+/// deterministically from a test in a crate that forbids `unsafe`
+/// (`uid.rs`'s module doc comment). `status_inner` itself stays free of
+/// this call — design.md §5 has `inspect` reuse the exact same
+/// `status_inner`, and `inspect` audits `AuditEvent::Inspect`, not
+/// `AuditEvent::Status`; wiring the audit here, in the caller, keeps the
+/// event tied to which subcommand asked, not to which function ran.
+fn audit_status(status: &HelperStatus) {
+    journal::audit(&AuditRecord {
+        event: AuditEvent::Status,
+        uid: status.uid,
+        user: &status.user,
+        outcome: AuditOutcome::Ok,
+        expires: status.expires.unwrap_or(Expiry::Never),
+        exit: 0,
+        reason: "",
+    });
 }
 
 /// design.md §4.5: no lock, no write, reads the authoritative rule file
@@ -1525,6 +1574,35 @@ mod tests {
         let (root, layout) = fresh_layout("status_live_ctx");
         let err = status(&layout).unwrap_err();
         assert_eq!(err.exit_code(), 10);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // --- task 2.3: `AuditEvent::Status` has existed since M1 and was
+    // emitted from nowhere; a successful `status` call now produces
+    // exactly one `AuditRecord` with `event: Status`, `outcome: Ok`
+    // (helper-observability "Journald Audit Records", modified to bind
+    // by "every outcome-producing subcommand"). The live `status(&Layout)`
+    // wrapper resolves its uid from `PKEXEC_UID` — `#![forbid(unsafe_code)]`
+    // makes `std::env::set_var` unavailable to mutate that from a test
+    // (see `uid.rs`'s module doc comment), so this exercises the same
+    // audit-emitting step `status`'s success path calls, deterministically,
+    // the way `resolve_username`/`resolve_expiry_audited` are unit-tested
+    // independently of their live wrapper elsewhere in this file.
+    #[test]
+    fn a_successful_status_call_audits_exactly_one_record_with_event_status_and_outcome_ok() {
+        let (root, layout) = fresh_layout("status_audit_active");
+        let content = render_rule(REAL_UID, "jorge", Expiry::At { epoch: 1_789_000_000 });
+        std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
+        let status = status_inner(&layout, REAL_UID, 1_789_000_500);
+
+        let text = capture_audit(|| {
+            audit_status(&status);
+        });
+
+        assert_eq!(text.matches("nopass audit event").count(), 1, "exactly one AuditRecord must be emitted: {text}");
+        assert!(text.contains("EVENT=\"status\""), "audit text: {text}");
+        assert!(text.contains("OUTCOME=\"ok\""), "audit text: {text}");
+        assert!(text.contains(&format!("UID={REAL_UID}")), "audit text: {text}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
