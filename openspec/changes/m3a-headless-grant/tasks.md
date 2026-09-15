@@ -146,22 +146,22 @@ lane discipline, not code.
 *(Design §2; must land before any new subcommand per the non-negotiable ordering)* — depends on
 Phase 2 (`AuditEvent`).
 
-- [ ] 3.1 Create `crates/nopass-helper/src/subject.rs` — `pub enum UidSource { Pkexec,
+- [x] 3.1 Create `crates/nopass-helper/src/subject.rs` — `pub enum UidSource { Pkexec,
       SystemRoot }`; `pub struct Subject { uid: u32, source: UidSource, event: AuditEvent }`
       with private fields.
-- [ ] 3.2 RED (Lane A) `subject.rs`: `Subject::pkexec(ctx, event)` — **note the absent uid
+- [x] 3.2 RED (Lane A) `subject.rs`: `Subject::pkexec(ctx, event)` — **note the absent uid
       parameter, asserted structurally**: a table test confirms `pkexec`'s signature has no
       `uid: u32` argument (compile-level; the test documents rather than proves this, matching
       M2's declined `trybuild` precedent). It unpacks `uid` only from
       `InvocationContext::Pkexec(uid)` and returns `Err(HelperError::Context(...))` (exit 10) for
       `InvocationContext::SystemRoot`, never `unreachable!()`. GREEN: implement `Subject::pkexec`.
-- [ ] 3.3 RED (Lane A) `subject.rs`: `Subject::root_target(ctx, uid, event)` — accepts only
+- [x] 3.3 RED (Lane A) `subject.rs`: `Subject::root_target(ctx, uid, event)` — accepts only
       `InvocationContext::SystemRoot`, rejects `Pkexec(_)` with `HelperError::Context` (exit 10,
       not a panic). GREEN: implement `Subject::root_target`.
-- [ ] 3.4 RED (Lane A) `subject.rs`: `Subject::uid()`/`source()`/`event()` accessors round-trip
+- [x] 3.4 RED (Lane A) `subject.rs`: `Subject::uid()`/`source()`/`event()` accessors round-trip
       exactly what each constructor was given; no third constructor exists (grep-level structural
       assertion — the type has exactly two ways to be built). GREEN: implement accessors.
-- [ ] 3.5 Modify `crates/nopass-helper/src/lib.rs` — add `pub mod subject;`.
+- [x] 3.5 Modify `crates/nopass-helper/src/lib.rs` — add `pub mod subject;`.
 
 ---
 

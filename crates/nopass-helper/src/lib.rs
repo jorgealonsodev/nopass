@@ -34,5 +34,6 @@ pub mod lock;
 pub mod ops;
 pub mod runner;
 pub mod statefile;
+pub mod subject;
 pub mod timer;
 pub mod uid;
