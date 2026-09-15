@@ -35,8 +35,13 @@
 //! readiness ladder, §0 G3, §8) and `app` (the single-owner reconciliation
 //! loop, §2 `app`, §6), completes `event`'s `Event` enum, and wires
 //! `main.rs`'s real startup sequence (§6.1).
+//!
+//! `m3-menu-and-config` Phase 1 adds `atomicfile` and `duration`. Phase 2
+//! adds `config` — the `~/.config/nopass/config.toml` reader/writer
+//! (design.md §4 D4).
 
 pub mod atomicfile;
+pub mod config;
 pub mod duration;
 pub mod state;
 pub mod runner;

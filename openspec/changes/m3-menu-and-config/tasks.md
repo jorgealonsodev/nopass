@@ -122,30 +122,30 @@ working state.
 
 *(Design §4 D4; Spec: user-config (all))* — depends on Phase 1. Parallel-safe with Phases 4, 5.
 
-- [ ] 2.1 Create `crates/nopass/src/config.rs` — `ConfigFault { Io, Malformed }`, `ConfigReading {
+- [x] 2.1 Create `crates/nopass/src/config.rs` — `ConfigFault { Io, Malformed }`, `ConfigReading {
       Parsed(Config), Absent, Faulted(ConfigFault) }`, `Config { default_duration: GrantDuration,
       warning_acknowledged: bool }`, `read`, `resolve`, `write`. The persisted TOML key is
       `warn_before_activation` (user-config schema) and maps to `!warning_acknowledged` on
       read/write — name and negation are both intentional; do not let them drift.
-- [ ] 2.2 RED (Lane A) `config.rs`, `TempDir` + `XDG_CONFIG_HOME`: path resolves
+- [x] 2.2 RED (Lane A) `config.rs`, `TempDir` + `XDG_CONFIG_HOME`: path resolves
       `$XDG_CONFIG_HOME/nopass/config.toml` when set, `~/.config/nopass/config.toml` otherwise
       (user-config "Config Path Honors XDG_CONFIG_HOME"). GREEN: implement path resolution.
-- [ ] 2.3 RED (Lane A) `config.rs`: missing file ⇒ `default_duration=Hour1`,
+- [x] 2.3 RED (Lane A) `config.rs`: missing file ⇒ `default_duration=Hour1`,
       `warn_before_activation=true`, without creating the file (user-config "A missing file resolves
       to schema defaults"). GREEN: implement `Absent` handling in `resolve`.
-- [ ] 2.4 RED (Lane A) `config.rs`: malformed TOML, non-UTF-8, truncated, unknown key, and an
+- [x] 2.4 RED (Lane A) `config.rs`: malformed TOML, non-UTF-8, truncated, unknown key, and an
       unrecognized `default_duration="3h"` all degrade to defaults plus an observable warning, never
       refuse to start; an unrecognized `default_duration` preserves a valid `warn_before_activation`
       in the same document (user-config "Tolerant Parsing Never Blocks Startup"; threat matrix
       "Config as foreign input"). GREEN: implement per-field tolerant `resolve` over the `toml_edit`
       DOM.
-- [ ] 2.5 RED (Lane A) `config.rs`: `write` uses `atomicfile::write` — temp file in the same
+- [x] 2.5 RED (Lane A) `config.rs`: `write` uses `atomicfile::write` — temp file in the same
       directory, renamed over the target; a write failing after temp-file creation leaves the prior
       file (or its absence) untouched (user-config "Atomic Write"). GREEN: implement `write`.
-- [ ] 2.6 RED (Lane A) `config.rs`: a write against a `Faulted` reading first renames the existing
+- [x] 2.6 RED (Lane A) `config.rs`: a write against a `Faulted` reading first renames the existing
       file to `config.toml.bak` (best-effort) before writing fresh. GREEN: implement the `.bak`
       rename.
-- [ ] 2.7 RED (Lane A) `config.rs`: a hostile `default_duration` value (`"; rm -rf /"`) never reaches
+- [x] 2.7 RED (Lane A) `config.rs`: a hostile `default_duration` value (`"; rm -rf /"`) never reaches
       argv — only `GrantDuration::parse`'s closed six-arm match output does (threat matrix "Config as
       foreign input"). GREEN: covered by 1.9 + 2.4 composition; this test pins the composition.
 
