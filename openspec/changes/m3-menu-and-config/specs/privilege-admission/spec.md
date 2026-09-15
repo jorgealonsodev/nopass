@@ -28,14 +28,15 @@ MUST FAIL, not skip, when no real polkit authority is reachable.
 - GIVEN `data/com.enfoquestic.nopass.policy` installed where a real polkit authority can read it
 - WHEN `EnumerateActions` is queried against that authority
 - THEN `com.enfoquestic.nopass.manage` appears in the result with the documented defaults
-- Testable via: `scripts/run-lane-b.sh` (real polkit authority, no privileged escalation)
+- Testable via: `scripts/run-lane-polkit.sh` (a container running `dbus-daemon --system`
+  and `polkitd`; real polkit authority, no privileged escalation)
 
 #### Scenario: A malformed policy file fails enumeration
 - GIVEN a deliberately malformed variant of the policy file (invalid XML or a missing required
   element)
 - WHEN it is submitted to the real polkit engine
 - THEN enumeration fails or omits the action, distinguishing the defect from the valid file
-- Testable via: `scripts/run-lane-b.sh`
+- Testable via: `scripts/run-lane-polkit.sh`
 
 #### Scenario: probe_polkit_readiness consumes the enumeration result
 - GIVEN `EnumerateActions` returns a result that does not include
@@ -48,4 +49,4 @@ MUST FAIL, not skip, when no real polkit authority is reachable.
 - GIVEN no real polkit authority is reachable in the running environment
 - WHEN this gate runs
 - THEN the gate reports failure, not a silent skip or a false pass
-- Testable via: `scripts/run-lane-b.sh`
+- Testable via: `scripts/run-lane-polkit.sh`

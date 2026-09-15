@@ -37,18 +37,19 @@ proves the shape of a call but never that systemd accepts it — the exact defec
   into a transient-unit form
 - WHEN `systemd-analyze verify` runs over that synthesized unit
 - THEN verification passes with no rejected property or syntax error
-- Testable via: `scripts/run-lane-b.sh` (real `systemd-analyze`, no privileged action)
+- Testable via: `cargo test --workspace` (Lane A: real `systemd-analyze`, no bus and no
+  privileged action are needed to ask it)
 
 #### Scenario: A corrupted property token fails the gate
 - GIVEN one `systemd-run` property token is deliberately malformed (e.g. an invalid
   `--on-calendar` value)
 - WHEN the same real-tool validation runs
 - THEN validation fails, distinguishing the defect from a passing run
-- Testable via: `scripts/run-lane-b.sh`
+- Testable via: `cargo test --workspace` (Lane A)
 
 #### Scenario: Absence of systemd-analyze fails the gate, not skips it
 - GIVEN `systemd-analyze` is not present in the running environment
 - WHEN this gate runs
 - THEN the gate reports failure, not a silent skip or a false pass
-- Testable via: `scripts/run-lane-b.sh` (binary hidden from `PATH` in a controlled
+- Testable via: `cargo test --workspace` (Lane A; binary hidden from `PATH` in a controlled
   sub-environment)
