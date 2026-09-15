@@ -17,6 +17,7 @@ notify = { workspace = true }
 async-io = { workspace = true }
 async-channel = { workspace = true }
 futures-lite = { workspace = true }
+toml_edit = { version = "=0.25.15", default-features = false, features = ["parse", "display"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

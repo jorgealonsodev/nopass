@@ -36,6 +36,8 @@
 //! loop, §2 `app`, §6), completes `event`'s `Event` enum, and wires
 //! `main.rs`'s real startup sequence (§6.1).
 
+pub mod atomicfile;
+pub mod duration;
 pub mod state;
 pub mod runner;
 pub mod probe;

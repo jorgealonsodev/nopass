@@ -94,14 +94,17 @@ mod systemd_contract {
     use super::format_systemd_calendar;
 
     fn require_systemd_analyze() {
-        let probe = std::process::Command::new("systemd-analyze").arg("--version").output().expect(
-            "systemd-analyze must be on PATH to run this test: it is the only thing that \
-             validates the --on-calendar value systemd actually accepts, and this crate would \
-             rather fail this test loudly than let that contract degrade back to being pinned by \
-             our own assertion alone (verify-report.md H3). Install systemd-analyze, or make an \
-             explicit, visible decision (e.g. #[ignore]) to run this crate's tests without it.",
+        // Delegates to the single shared "fail loudly, never skip" gate
+        // (design.md §6, `toolgate::require`) instead of keeping a
+        // standalone copy of the same `.expect(...)` here — this module's
+        // own doc comment above explains why a second copy of this rule
+        // is exactly how it gets softened.
+        crate::toolgate::require(
+            "systemd-analyze",
+            "it is the only thing that validates the --on-calendar value systemd actually \
+             accepts, and this crate would rather fail this test loudly than let that contract \
+             degrade back to being pinned by our own assertion alone (verify-report.md H3)",
         );
-        assert!(probe.status.success(), "systemd-analyze exists but does not run");
     }
 
     #[test]

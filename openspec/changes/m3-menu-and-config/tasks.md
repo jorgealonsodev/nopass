@@ -84,34 +84,34 @@ working state.
 
 *(Design §0 G4, §2 `duration`, §4 D4 `atomicfile`, §6 `toolgate`; consumed by every later phase)*
 
-- [ ] 1.1 Modify `crates/nopass/Cargo.toml` — `cargo add --package nopass toml_edit@=0.25.15
+- [x] 1.1 Modify `crates/nopass/Cargo.toml` — `cargo add --package nopass toml_edit@=0.25.15
       --no-default-features --features parse,display` (G4 proven; ordinary add, no fallback ladder).
-- [ ] 1.2 RED (Lane A): `cargo tree -i toml_edit --workspace` shows exactly one version 0.25.15;
+- [x] 1.2 RED (Lane A): `cargo tree -i toml_edit --workspace` shows exactly one version 0.25.15;
       `scripts/assert-single-reactor.sh` still passes; `git diff --stat Cargo.lock` shows exactly one
       new `[[package]]` stanza (`toml_writer 1.1.2`). GREEN: satisfied by 1.1; commit `Cargo.lock`.
-- [ ] 1.3 Create `crates/nopass-core/src/toolgate.rs` — `pub fn require(tool: &str, why: &str)`:
+- [x] 1.3 Create `crates/nopass-core/src/toolgate.rs` — `pub fn require(tool: &str, why: &str)`:
       `Command::new(tool).arg("--version")....expect(msg)` panics (never `eprintln!`-and-return) when
       the tool is absent — the single shared "fail, don't skip" rule for both hardening gates.
-- [ ] 1.4 RED (Lane A) `toolgate.rs`: `require` panics for a nonexistent binary name; passes silently
+- [x] 1.4 RED (Lane A) `toolgate.rs`: `require` panics for a nonexistent binary name; passes silently
       for a known-present one. GREEN: implement `require`.
-- [ ] 1.5 Modify `crates/nopass-core/src/timefmt.rs` — its private `require_systemd_analyze`
+- [x] 1.5 Modify `crates/nopass-core/src/timefmt.rs` — its private `require_systemd_analyze`
       delegates to `toolgate::require`, replacing its standalone `.expect(...)`. RED/GREEN: existing
       `timefmt.rs` tests (67–105) pass unchanged — a delegation refactor, no new test.
-- [ ] 1.6 Create `crates/nopass/src/atomicfile.rs` — `write(path, bytes, mode)`: `O_CREAT|O_EXCL` tmp
+- [x] 1.6 Create `crates/nopass/src/atomicfile.rs` — `write(path, bytes, mode)`: `O_CREAT|O_EXCL` tmp
       → write → `fchmod` → `fsync` → `rename` → best-effort parent `fsync`; every failure from step 1
       unlinks the tmp.
-- [ ] 1.7 RED (Lane A) `atomicfile.rs`, `TempDir`: tmp unlinked on every injected failure; an
+- [x] 1.7 RED (Lane A) `atomicfile.rs`, `TempDir`: tmp unlinked on every injected failure; an
       interrupted write never leaves a torn final file; a pre-planted symlink at the target causes
       `O_EXCL` to refuse, not follow (threat matrix "Executable-file authoring"). GREEN: implement
       `write`.
-- [ ] 1.8 Create `crates/nopass/src/duration.rs` — `enum GrantDuration { Minutes15, Hour1, Hours4,
+- [x] 1.8 Create `crates/nopass/src/duration.rs` — `enum GrantDuration { Minutes15, Hour1, Hours4,
       Hours8, UntilReboot, Permanent }`, `const ALL: [GrantDuration; 6]`, `expiry`, `args`,
       `config_key`, `parse`.
-- [ ] 1.9 RED (Lane A) `duration.rs`: `args()` table over `ALL` — never both `--until`/
+- [x] 1.9 RED (Lane A) `duration.rs`: `args()` table over `ALL` — never both `--until`/
       `--until-reboot`, exactly one variant with neither; `config_key`/`parse` round-trip for all six
       plus an unknown string ⇒ `None` (tray-privileged-invocation "All six durations render their
       documented argv with no collision"). GREEN: implement `expiry`, `args`, `config_key`, `parse`.
-- [ ] 1.10 RED (Lane A): a named test documents `GrantDuration::ALL` as the **single** ordering
+- [x] 1.10 RED (Lane A): a named test documents `GrantDuration::ALL` as the **single** ordering
       constant in the crate, consumed later by Phase 6's submenu build and Phase 7's
       `RadioGroup::select` index lookup — no second ordering may exist (design Open Questions).
       GREEN: none — pins the single-source guarantee `duration.rs` already provides.

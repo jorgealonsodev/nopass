@@ -21,3 +21,4 @@ pub mod paths;
 pub mod state;
 pub mod template;
 pub mod timefmt;
+pub mod toolgate;
