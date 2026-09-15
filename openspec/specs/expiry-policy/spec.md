@@ -58,7 +58,7 @@ The system MUST represent expiry as exactly one of `Never`, `Reboot`, or `At(<UT
 
 ### Requirement: Transient Timer Replacement
 
-Before creating a new expiry timer for a uid, the system MUST stop any existing `nopass-expire-<uid>.timer` (tolerating a "not loaded" error), then invoke `systemd-run --unit=nopass-expire-<uid> --on-calendar=<UTC epoch as RFC-3339 with explicit Z> /usr/libexec/nopass-helper expire --uid <uid>`. No timer is created for `Never` or `Reboot` expiry. If timer scheduling fails, the just-written rule file MUST be rolled back (unlinked) and the helper MUST exit 17.
+Before creating a new expiry timer for a uid, the system MUST stop any existing `nopass-expire-<uid>.timer` (tolerating a "not loaded" error), then invoke `systemd-run --unit=nopass-expire-<uid> --on-calendar=<UTC epoch as `YYYY-MM-DD HH:MM:SS UTC`> /usr/libexec/nopass-helper expire --uid <uid>`. The calendar value MUST be the space-separated form with an explicit named zone, and MUST NOT be RFC-3339: systemd's calendar grammar resembles RFC-3339 without being it, and rejects both the `T` separator and the `Z` designator. This sentence previously required RFC-3339 with an explicit `Z`, which no systemd accepts, so no timed grant worked from M1 until it was found by hand. A test MUST validate the rendered value with `systemd-analyze calendar`, because an argv pinned by string equality proves only that we emit a string, never that the callee accepts it. No timer is created for `Never` or `Reboot` expiry. If timer scheduling fails, the just-written rule file MUST be rolled back (unlinked) and the helper MUST exit 17.
 
 #### Scenario: First temporary enable creates the timer
 - GIVEN no existing timer for uid 1000

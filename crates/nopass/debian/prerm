@@ -1,0 +1,14 @@
+#!/bin/sh
+# Revoke every grant before the helper that revokes them is removed. Leaving a
+# NOPASSWD rule behind with no tool to remove it is the one uninstall outcome
+# this package must never produce.
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    systemctl stop 'nopass-expire-*.timer' >/dev/null 2>&1 || true
+    if [ -x /usr/libexec/nopass-helper ]; then
+        /usr/libexec/nopass-helper expire --boot >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/sudoers.d/90-nopass-* 2>/dev/null || true
+    systemctl disable nopass-cleanup.service >/dev/null 2>&1 || true
+fi
+exit 0

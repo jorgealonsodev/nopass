@@ -1,0 +1,11 @@
+#!/bin/sh
+# Create /run/nopass now rather than waiting for the next boot, so the tray
+# has something to watch immediately after install.
+set -e
+if [ "$1" = "configure" ]; then
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/nopass.conf >/dev/null 2>&1 || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable nopass-cleanup.service >/dev/null 2>&1 || true
+    gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
+exit 0

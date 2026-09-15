@@ -770,7 +770,7 @@ mod tests {
             args: vec![
                 format!("--unit={}", timer::unit_name(uid)),
                 format!("--description=NoPass expiry for uid {uid}"),
-                format!("--on-calendar={}", nopass_core::timefmt::format_utc_rfc3339(epoch)),
+                format!("--on-calendar={}", nopass_core::timefmt::format_systemd_calendar(epoch)),
                 "--timer-property=AccuracySec=1s".to_string(),
                 "--timer-property=Persistent=false".to_string(),
                 "--timer-property=WakeSystem=false".to_string(),

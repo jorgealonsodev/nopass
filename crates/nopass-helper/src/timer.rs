@@ -54,7 +54,7 @@ pub fn schedule(runner: &dyn CommandRunner, binaries: &Binaries, uid: u32, epoch
         args: vec![
             format!("--unit={}", unit_name(uid)),
             format!("--description=NoPass expiry for uid {uid}"),
-            format!("--on-calendar={}", nopass_core::timefmt::format_utc_rfc3339(epoch)),
+            format!("--on-calendar={}", nopass_core::timefmt::format_systemd_calendar(epoch)),
             "--timer-property=AccuracySec=1s".to_string(),
             "--timer-property=Persistent=false".to_string(),
             "--timer-property=WakeSystem=false".to_string(),
@@ -130,7 +130,7 @@ mod tests {
             args: vec![
                 "--unit=nopass-expire-1000".to_string(),
                 "--description=NoPass expiry for uid 1000".to_string(),
-                "--on-calendar=2026-09-12T15:00:00Z".to_string(),
+                "--on-calendar=2026-09-12 15:00:00 UTC".to_string(),
                 "--timer-property=AccuracySec=1s".to_string(),
                 "--timer-property=Persistent=false".to_string(),
                 "--timer-property=WakeSystem=false".to_string(),
@@ -161,7 +161,7 @@ mod tests {
             args: vec![
                 "--unit=nopass-expire-2000".to_string(),
                 "--description=NoPass expiry for uid 2000".to_string(),
-                "--on-calendar=1970-01-01T00:01:40Z".to_string(),
+                "--on-calendar=1970-01-01 00:01:40 UTC".to_string(),
                 "--timer-property=AccuracySec=1s".to_string(),
                 "--timer-property=Persistent=false".to_string(),
                 "--timer-property=WakeSystem=false".to_string(),

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=NoPass
+GenericName=Passwordless sudo
+Comment=Grant and revoke passwordless sudo for a bounded time
+Comment[es]=Conceder y revocar sudo sin contraseña durante un tiempo limitado
+Exec=nopass
+Icon=nopass-locked
+Terminal=false
+Categories=System;Security;Settings;
+Keywords=sudo;password;privilege;admin;
+Keywords[es]=sudo;contraseña;privilegio;administrador;
+StartupNotify=false

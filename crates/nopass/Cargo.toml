@@ -20,3 +20,44 @@ futures-lite = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+# Debian packaging. This is M4 scope pulled forward so the Lane C manual
+# checklist can be installed with one command instead of eight sudo lines.
+# M4 still owns the rest of that milestone: rpm, the AUR package, purge
+# behaviour and testing on the target distributions.
+[package.metadata.deb]
+name = "nopass"
+maintainer = "Jorge Alonso <j.alonso@enfoquestic.com>"
+copyright = "2026, Jorge Alonso"
+license-file = ["../../LICENSE", "0"]
+extended-description = """
+Grants and revokes passwordless sudo for the current session's user, for a
+bounded time, through a privileged helper invoked via polkit. The tray never
+writes to /etc/sudoers.d itself: every mutation goes through the helper, which
+validates each rule with visudo before it is renamed into place and schedules a
+transient systemd timer to revoke it."""
+section = "admin"
+priority = "optional"
+depends = "$auto, sudo, policykit-1 | polkit"
+assets = [
+    # The tray: the only unprivileged binary, on the user's PATH.
+    ["../../target/release/nopass", "usr/bin/", "755"],
+    # The helper: invoked only through pkexec, never directly by the user,
+    # which is why it lives in libexec rather than bin. Debian's path; the
+    # Arch package rewrites exec.path to /usr/lib/nopass/ instead.
+    ["../../target/release/nopass-helper", "usr/libexec/", "755"],
+    # The privilege boundary's declaration. polkit reads this directory.
+    ["../../data/com.enfoquestic.nopass.policy", "usr/share/polkit-1/actions/", "644"],
+    # Creates /run/nopass at boot so the helper never has to.
+    ["../../data/nopass.tmpfiles.conf", "usr/lib/tmpfiles.d/nopass.conf", "644"],
+    # Sweeps stale and reboot-marked rules before anyone can log in.
+    ["../../data/nopass-cleanup.service", "usr/lib/systemd/system/", "644"],
+    ["../../data/icons/*.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    # Without this the package installs a graphical application with no way
+    # to launch it from a menu. StartupNotify is false because a tray item
+    # never maps a window, so a launcher waiting for one would spin.
+    ["../../data/nopass.desktop", "usr/share/applications/", "644"],
+]
+# Autostart is the user's decision, not the package's (RF-09), so no
+# systemd-enable and no autostart entry are shipped here.
+maintainer-scripts = "debian/"
