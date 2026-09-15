@@ -198,21 +198,21 @@ depends on Phase 3 (`UidSource`).
 *(Design §1; Spec: helper-cli "Fixed Subcommand and Flag Surface", "Required Target UID",
 "Mutually Exclusive Duration Flags")* — depends on Phase 1 only for lane discipline.
 
-- [ ] 5.1 Modify `crates/nopass-helper/src/cli.rs` — add three flat `Cmd` variants: `Grant {
+- [x] 5.1 Modify `crates/nopass-helper/src/cli.rs` — add three flat `Cmd` variants: `Grant {
       uid: u32 (required), until: Option<u64>, until_reboot: bool }` with its own `ArgGroup`
       named `"grant_when"` (distinct from `Enable`'s `"when"` — group names are global);
       `Revoke { uid: u32 (required) }`; `Inspect { uid: u32 (required) }`. No `admin` dispatch
       verb.
-- [ ] 5.2 RED (Lane A) `cli.rs`: `grant --uid 1000 --until <epoch>` parses to the expected
+- [x] 5.2 RED (Lane A) `cli.rs`: `grant --uid 1000 --until <epoch>` parses to the expected
       variant (helper-cli "A documented grant invocation parses successfully"). GREEN: satisfied
       by 5.1.
-- [ ] 5.3 RED (Lane A) `cli.rs`: `admin --action grant --uid 1000` exits 2 because `admin` is not
+- [x] 5.3 RED (Lane A) `cli.rs`: `admin --action grant --uid 1000` exits 2 because `admin` is not
       a declared subcommand (helper-cli "An admin --action dispatch form is rejected"). GREEN:
       none — the closed surface already rejects it; test pins the design decision.
-- [ ] 5.4 RED (Lane A) `cli.rs`: `grant` with no `--uid` exits 2; `revoke`/`inspect` each with no
+- [x] 5.4 RED (Lane A) `cli.rs`: `grant` with no `--uid` exits 2; `revoke`/`inspect` each with no
       `--uid` exit 2 (helper-cli "Required Target UID on Headless Subcommands", both scenarios).
       GREEN: satisfied by `required = true` in 5.1.
-- [ ] 5.5 RED (Lane A) `cli.rs`: `revoke --uid 1000` and `inspect --uid 1000` each parse with only
+- [x] 5.5 RED (Lane A) `cli.rs`: `revoke --uid 1000` and `inspect --uid 1000` each parse with only
       that flag; `grant --uid 1000 --until-reboot` parses to `Reboot`; `grant --uid 1000 --until
       100 --until-reboot` exits 2 (helper-cli "grant --until-reboot alone", "Both duration flags
       together on grant"). GREEN: satisfied by 5.1's `ArgGroup`.

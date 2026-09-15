@@ -86,6 +86,18 @@ pub fn resolve(cmd: &Cmd, pkexec_uid: Option<&str>, real_uid: u32) -> Result<Inv
             }
             Ok(InvocationContext::SystemRoot)
         }
+        // PLACEHOLDER, not the real m3a-headless-grant wiring: Phase 6 is
+        // "uid.rs: SystemRoot arm covers four subcommands"
+        // (openspec/changes/m3a-headless-grant/tasks.md), which folds
+        // `Grant`/`Revoke`/`Inspect` into the `Cmd::Expire { .. }` arm
+        // above so all four resolve `SystemRoot` the same way. Phase 5 is
+        // the CLI parse surface only — this arm exists solely to keep the
+        // crate compiling now that `Cmd` has three new variants, and is
+        // replaced (not extended) by Phase 6, never merged with a
+        // wildcard.
+        Cmd::Grant { .. } | Cmd::Revoke { .. } | Cmd::Inspect { .. } => {
+            Err(HelperError::Context("not yet wired: uid.rs Phase 6 (m3a-headless-grant) resolves this subcommand"))
+        }
     }
 }
 

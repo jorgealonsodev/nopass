@@ -1,9 +1,17 @@
-//! CLI surface for `nopass-helper`: the fixed four-subcommand, closed-flag
+//! CLI surface for `nopass-helper`: the fixed seven-subcommand, closed-flag
 //! parser (helper-cli spec, "Fixed Subcommand and Flag Surface").
 //!
 //! No `allow_external_subcommands`, `allow_hyphen_values`, or
 //! `trailing_var_arg` — anything not explicitly declared here is rejected
 //! by clap at parse time (exit 2) before any privileged handler runs.
+//!
+//! `grant`, `revoke`, and `inspect` (design.md §1, m3a-headless-grant) are
+//! flat siblings of the original four, not verbs of a hand-written `admin`
+//! dispatch layer — an `admin --action <verb>` form would move the verb
+//! out of this validated surface, so it is rejected as a design (helper-cli
+//! "An admin --action dispatch form is rejected"). Each of the three
+//! requires an explicit `--uid`; no environment variable substitutes for
+//! it on these subcommands.
 
 use clap::{ArgGroup, Parser, Subcommand};
 
@@ -31,6 +39,29 @@ pub enum Cmd {
         uid: Option<u32>,
         #[arg(long)]
         boot: bool,
+    },
+    /// Root-context grant of a target uid, per an explicit `--uid`
+    /// (helper-cli "Required Target UID on Headless Subcommands"). The
+    /// `grant_when` group name is distinct from `Enable`'s `when` — clap
+    /// `ArgGroup` names are global, so reusing it would collide.
+    #[command(group(ArgGroup::new("grant_when").multiple(false).args(["until", "until_reboot"])))]
+    Grant {
+        #[arg(long, required = true)]
+        uid: u32,
+        #[arg(long)]
+        until: Option<u64>,
+        #[arg(long = "until-reboot")]
+        until_reboot: bool,
+    },
+    /// Root-context revoke of a target uid, per an explicit `--uid`.
+    Revoke {
+        #[arg(long, required = true)]
+        uid: u32,
+    },
+    /// Root-context inspection of a target uid, per an explicit `--uid`.
+    Inspect {
+        #[arg(long, required = true)]
+        uid: u32,
     },
 }
 
@@ -96,5 +127,81 @@ mod tests {
     fn disable_and_status_parse_with_no_flags() {
         assert_eq!(parse(&["disable"]).unwrap().cmd, Cmd::Disable);
         assert_eq!(parse(&["status"]).unwrap().cmd, Cmd::Status);
+    }
+
+    // --- task 5.2: a documented grant invocation parses successfully
+    // (helper-cli "A documented grant invocation parses successfully") ------
+
+    #[test]
+    fn a_documented_grant_invocation_parses_successfully() {
+        let cli = parse(&["grant", "--uid", "1000", "--until", "100"]).unwrap();
+        assert_eq!(cli.cmd, Cmd::Grant { uid: 1000, until: Some(100), until_reboot: false });
+    }
+
+    // --- task 5.3: an `admin --action` dispatch form is rejected
+    // (helper-cli "An admin --action dispatch form is rejected") ------------
+
+    #[test]
+    fn admin_action_dispatch_form_is_rejected_with_exit_code_2() {
+        let err = parse(&["admin", "--action", "grant", "--uid", "1000"]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    // --- task 5.4: `grant`/`revoke`/`inspect` each require `--uid`
+    // (helper-cli "Required Target UID on Headless Subcommands") ------------
+
+    #[test]
+    fn grant_without_uid_is_rejected_with_exit_code_2() {
+        let err = parse(&["grant"]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn revoke_and_inspect_without_uid_are_each_rejected_with_exit_code_2() {
+        for args in [["revoke"].as_slice(), ["inspect"].as_slice()] {
+            let err = parse(args).unwrap_err();
+            assert_eq!(err.exit_code(), 2);
+        }
+    }
+
+    // --- task 5.5: `revoke --uid`/`inspect --uid` parse with only that
+    // flag; `grant --until-reboot` parses to Reboot; both duration flags
+    // together on `grant` are rejected (helper-cli "revoke --uid and
+    // inspect --uid parse with only that flag", "grant --until-reboot alone
+    // parses to Reboot", "Both duration flags together on grant are
+    // rejected") -------------------------------------------------------------
+
+    #[test]
+    fn revoke_uid_and_inspect_uid_parse_with_only_that_flag() {
+        assert_eq!(parse(&["revoke", "--uid", "1000"]).unwrap().cmd, Cmd::Revoke { uid: 1000 });
+        assert_eq!(parse(&["inspect", "--uid", "1000"]).unwrap().cmd, Cmd::Inspect { uid: 1000 });
+    }
+
+    #[test]
+    fn grant_until_reboot_alone_parses_to_reboot() {
+        let cli = parse(&["grant", "--uid", "1000", "--until-reboot"]).unwrap();
+        assert_eq!(cli.cmd, Cmd::Grant { uid: 1000, until: None, until_reboot: true });
+    }
+
+    #[test]
+    fn grant_both_duration_flags_together_are_rejected_with_exit_code_2() {
+        let err = parse(&["grant", "--uid", "1000", "--until", "100", "--until-reboot"]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    // --- orchestrator-requested negative control: an unknown flag on each
+    // new subcommand is rejected the same way `enable --bogus` already is
+    // (helper-cli "Unknown flag on a known subcommand is rejected") --------
+
+    #[test]
+    fn unknown_flag_on_each_new_subcommand_is_rejected_with_exit_code_2() {
+        for args in [
+            ["grant", "--uid", "1000", "--bogus"].as_slice(),
+            ["revoke", "--uid", "1000", "--bogus"].as_slice(),
+            ["inspect", "--uid", "1000", "--bogus"].as_slice(),
+        ] {
+            let err = parse(args).unwrap_err();
+            assert_eq!(err.exit_code(), 2);
+        }
     }
 }

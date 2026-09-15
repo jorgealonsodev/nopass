@@ -104,18 +104,21 @@ impl AuditEvent {
 /// it is audited under (design.md §4 "Growth that closes the omission
 /// hole"; threat matrix "Unaudited new subcommand"). No wildcard arm
 /// means a subcommand added to `Cmd` without a corresponding arm here
-/// fails to compile, rather than silently shipping unaudited. Over the
-/// `Cmd` surface as of this phase (`Enable`, `Disable`, `Status`,
-/// `Expire`), this map is total by construction and injective into the
-/// now-seven-variant `AuditEvent` domain — `Grant`/`Revoke`/`Inspect`
-/// stay unreachable here until a later phase of `m3a-headless-grant`
-/// adds their `Cmd` variants and this match gains their arms.
+/// fails to compile, rather than silently shipping unaudited — exactly
+/// what happened here: `m3a-headless-grant` Phase 5 added `Grant`,
+/// `Revoke`, and `Inspect` to `Cmd`, which broke this match until the
+/// three arms below were added. Over the now-seven-variant `Cmd` surface,
+/// this map is total by construction and injective into the
+/// now-seven-variant `AuditEvent` domain.
 pub fn audit_event_for(cmd: &crate::cli::Cmd) -> AuditEvent {
     match cmd {
         crate::cli::Cmd::Enable { .. } => AuditEvent::Enable,
         crate::cli::Cmd::Disable => AuditEvent::Disable,
         crate::cli::Cmd::Status => AuditEvent::Status,
         crate::cli::Cmd::Expire { .. } => AuditEvent::Expire,
+        crate::cli::Cmd::Grant { .. } => AuditEvent::Grant,
+        crate::cli::Cmd::Revoke { .. } => AuditEvent::Revoke,
+        crate::cli::Cmd::Inspect { .. } => AuditEvent::Inspect,
     }
 }
 
@@ -445,9 +448,23 @@ mod tests {
             crate::cli::Cmd::Disable,
             crate::cli::Cmd::Status,
             crate::cli::Cmd::Expire { uid: Some(1000), boot: false },
+            crate::cli::Cmd::Grant { uid: 1000, until: None, until_reboot: false },
+            crate::cli::Cmd::Revoke { uid: 1000 },
+            crate::cli::Cmd::Inspect { uid: 1000 },
         ];
         let mapped: Vec<AuditEvent> = cmds.iter().map(audit_event_for).collect();
-        assert_eq!(mapped, vec![AuditEvent::Enable, AuditEvent::Disable, AuditEvent::Status, AuditEvent::Expire]);
+        assert_eq!(
+            mapped,
+            vec![
+                AuditEvent::Enable,
+                AuditEvent::Disable,
+                AuditEvent::Status,
+                AuditEvent::Expire,
+                AuditEvent::Grant,
+                AuditEvent::Revoke,
+                AuditEvent::Inspect,
+            ]
+        );
 
         // Injective: no two distinct mapped events collide.
         for (i, a) in mapped.iter().enumerate() {

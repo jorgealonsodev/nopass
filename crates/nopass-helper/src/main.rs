@@ -69,6 +69,20 @@ fn dispatch(
         Cmd::Disable => ops::disable(layout, runner, binaries),
         Cmd::Status => ops::status(layout),
         Cmd::Expire { uid, boot } => ops::expire(layout, runner, binaries, uid, boot),
+        // PLACEHOLDER, not the real m3a-headless-grant wiring: Phase 7
+        // ("The ops.rs Reuse Seam") is what routes these to
+        // `ops::grant`/`ops::revoke`/`ops::inspect`
+        // (openspec/changes/m3a-headless-grant/tasks.md). Phase 5 is the
+        // CLI parse surface only — this arm exists solely to keep the
+        // crate compiling now that `Cmd` has three new variants, and
+        // returns the narrowest honest result: `uid::resolve`'s own
+        // Phase 6 placeholder (uid.rs) already rejects all three with
+        // `HelperError::Context` (exit 10), so this arm reproduces that
+        // exact outcome directly rather than reaching a handler that does
+        // not exist yet.
+        Cmd::Grant { .. } | Cmd::Revoke { .. } | Cmd::Inspect { .. } => {
+            Err(HelperError::Context("not yet wired: ops.rs Phase 7 (m3a-headless-grant) handles this subcommand"))
+        }
     }
 }
 
