@@ -224,22 +224,22 @@ depends on Phase 3 (`UidSource`).
 *(Design §2; Spec: privilege-admission "UID Resolution by Invocation Context")* — depends on
 Phase 5 (`Cmd` variants must exist to match on).
 
-- [ ] 6.1 Modify `crates/nopass-helper/src/uid.rs` — the `Cmd::Expire { .. }` arm at `uid.rs:80`
+- [x] 6.1 Modify `crates/nopass-helper/src/uid.rs` — the `Cmd::Expire { .. }` arm at `uid.rs:80`
       (read-only reference for the current line) becomes `Cmd::Expire { .. } | Cmd::Grant { .. }
       | Cmd::Revoke { .. } | Cmd::Inspect { .. }`; its two `&'static str` error messages
       generalize from `"expire"` to `"this subcommand"`.
-- [ ] 6.2 RED (Lane A) `uid.rs`: `grant --uid 1000`, `revoke --uid 1000`, `inspect --uid 1000`
+- [x] 6.2 RED (Lane A) `uid.rs`: `grant --uid 1000`, `revoke --uid 1000`, `inspect --uid 1000`
       each run with `PKEXEC_UID` set ⇒ exit 10, no write (privilege-admission "Grant, revoke, and
       inspect are each rejected when PKEXEC_UID is set"). GREEN: satisfied by 6.1.
-- [ ] 6.3 RED (Lane A) `uid.rs`: the same three, run as non-root with `PKEXEC_UID` unset ⇒ exit
+- [x] 6.3 RED (Lane A) `uid.rs`: the same three, run as non-root with `PKEXEC_UID` unset ⇒ exit
       10 (privilege-admission "...rejected for a non-root caller with no PKEXEC_UID" — the
       existing unprivileged test process already satisfies this precondition). GREEN: satisfied
       by 6.1.
-- [ ] 6.4 RED (Lane A) `uid.rs`: `grant --uid 1000` resolved as real uid 0 with `PKEXEC_UID`
+- [x] 6.4 RED (Lane A) `uid.rs`: `grant --uid 1000` resolved as real uid 0 with `PKEXEC_UID`
       unset ⇒ `InvocationContext::SystemRoot`, with the target uid taken from `--uid`, not from
       any environment variable (privilege-admission "Grant resolves the SystemRoot context and
       the explicit target uid"). GREEN: satisfied by 6.1.
-- [ ] 6.5 RED (Lane A): existing `uid.rs` tests `expire_resolves_as_system_root_when_...` and
+- [x] 6.5 RED (Lane A): existing `uid.rs` tests `expire_resolves_as_system_root_when_...` and
       `expire_invoked_non_root_without_pkexec_uid_is_rejected` (`uid.rs:210`, `uid.rs:214`,
       read-only references) pass unchanged — the generalized match arm produces byte-identical
       behaviour for `Cmd::Expire`. GREEN: none — regression check only.

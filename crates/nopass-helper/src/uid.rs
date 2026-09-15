@@ -3,8 +3,12 @@
 //! "Privileged invocation context").
 //!
 //! `enable`/`disable`/`status` resolve their target uid exclusively from
-//! `PKEXEC_UID`; `expire` requires the process's real uid to be 0 AND
-//! `PKEXEC_UID` unset or empty. Both `PKEXEC_UID` and the real uid are
+//! `PKEXEC_UID` and carry no uid argument of their own; `expire`,
+//! `grant`, `revoke`, and `inspect` each require the process's real uid
+//! to be 0 AND `PKEXEC_UID` unset or empty, and each takes its own
+//! target uid from its own `--uid`/`--boot` flag instead — never from
+//! `PKEXEC_UID` (m3a-headless-grant design.md §2). Both `PKEXEC_UID` and
+//! the real uid are
 //! taken as explicit parameters rather than read from `std::env`/`nix`
 //! directly inside `resolve`, so every rejection case can be asserted
 //! deterministically under `cargo test` without mutating this process's
@@ -32,8 +36,11 @@ pub enum InvocationContext {
     /// `enable`/`disable`/`status`, resolved from a valid, non-zero
     /// `PKEXEC_UID`.
     Pkexec(u32),
-    /// `expire`, running as the process's own real uid 0 with no
-    /// `PKEXEC_UID` set.
+    /// `expire`, `grant`, `revoke`, or `inspect`, running as the
+    /// process's own real uid 0 with no `PKEXEC_UID` set. Each still
+    /// carries its own target uid separately, via its own `--uid`/
+    /// `--boot` flag — this variant names only the authority, not the
+    /// target.
     SystemRoot,
 }
 
@@ -42,11 +49,11 @@ pub enum InvocationContext {
 /// - `Enable`/`Disable`/`Status`: `pkexec_uid` must be present, non-empty,
 ///   parseable as a `u32`, and non-zero. Anything else is
 ///   `HelperError::Context` (exit 10).
-/// - `Expire`: `real_uid` must be exactly `0` and `pkexec_uid` must be
-///   absent or empty. `PKEXEC_UID` being set at all (even to a valid
-///   value) on `expire` is rejected — an `expire` invocation is never a
-///   pkexec-context invocation. Anything else is `HelperError::Context`
-///   (exit 10).
+/// - `Expire`/`Grant`/`Revoke`/`Inspect`: `real_uid` must be exactly `0`
+///   and `pkexec_uid` must be absent or empty. `PKEXEC_UID` being set at
+///   all (even to a valid value) on any of these four is rejected — none
+///   of them is ever a pkexec-context invocation. Anything else is
+///   `HelperError::Context` (exit 10).
 ///
 /// An empty `PKEXEC_UID` is treated identically to an absent one,
 /// matching the empty-environment convention documented for
@@ -77,26 +84,42 @@ pub fn resolve(cmd: &Cmd, pkexec_uid: Option<&str>, real_uid: u32) -> Result<Inv
             }
             Ok(InvocationContext::Pkexec(uid))
         }
-        Cmd::Expire { .. } => {
+        // `Expire`, `Grant`, `Revoke`, and `Inspect` share one arm
+        // because they share exactly one authority requirement: real uid
+        // 0 AND `PKEXEC_UID` unset/empty. That is the entire similarity
+        // — each still takes its OWN target uid from its OWN
+        // `--uid`/`--boot` flag; `resolve` never reads a target uid out
+        // of `Cmd` here, only the invocation context (see
+        // `grant_resolves_system_root_regardless_of_the_uid_value_
+        // carried_by_cmd` below, which proves the point by resolving two
+        // different `--uid` values identically).
+        //
+        // `Enable`/`Disable`/`Status`, by contrast, have no uid argument
+        // on their CLI surface at all (`cli.rs`) and take their target
+        // exclusively from `PKEXEC_UID` — the arm above this one. That
+        // asymmetry is the security property this module exists to
+        // enforce: a `SystemRoot`-context subcommand may name ANY
+        // admitted uid as its target (bounds checked later, in
+        // `ops.rs`'s `admit_root_target`), while a `Pkexec`-context
+        // subcommand is permanently self-targeted and has no flag to ask
+        // for anyone else. Do not add a uid argument to
+        // `Enable`/`Disable`/`Status`, and do not remove `--uid` from
+        // this arm's four subcommands — collapsing either family into
+        // the other erases this boundary.
+        //
+        // This match has no wildcard arm (pinned by
+        // `resolve_match_places_every_systemroot_cmd_variant_explicitly_
+        // no_wildcard_absorption` below): a ninth `Cmd` variant must
+        // fail to compile here, not silently join whichever arm `_`
+        // would have caught.
+        Cmd::Expire { .. } | Cmd::Grant { .. } | Cmd::Revoke { .. } | Cmd::Inspect { .. } => {
             if pkexec_present {
-                return Err(HelperError::Context("expire must not run under a pkexec context"));
+                return Err(HelperError::Context("this subcommand must not run under a pkexec context"));
             }
             if real_uid != 0 {
-                return Err(HelperError::Context("expire requires the real uid to be 0"));
+                return Err(HelperError::Context("this subcommand requires the real uid to be 0"));
             }
             Ok(InvocationContext::SystemRoot)
-        }
-        // PLACEHOLDER, not the real m3a-headless-grant wiring: Phase 6 is
-        // "uid.rs: SystemRoot arm covers four subcommands"
-        // (openspec/changes/m3a-headless-grant/tasks.md), which folds
-        // `Grant`/`Revoke`/`Inspect` into the `Cmd::Expire { .. }` arm
-        // above so all four resolve `SystemRoot` the same way. Phase 5 is
-        // the CLI parse surface only — this arm exists solely to keep the
-        // crate compiling now that `Cmd` has three new variants, and is
-        // replaced (not extended) by Phase 6, never merged with a
-        // wildcard.
-        Cmd::Grant { .. } | Cmd::Revoke { .. } | Cmd::Inspect { .. } => {
-            Err(HelperError::Context("not yet wired: uid.rs Phase 6 (m3a-headless-grant) resolves this subcommand"))
         }
     }
 }
@@ -119,6 +142,18 @@ mod tests {
 
     fn expire_uid() -> Cmd {
         Cmd::Expire { uid: Some(1000), boot: false }
+    }
+
+    fn grant_uid() -> Cmd {
+        Cmd::Grant { uid: 1000, until: None, until_reboot: false }
+    }
+
+    fn revoke_uid() -> Cmd {
+        Cmd::Revoke { uid: 1000 }
+    }
+
+    fn inspect_uid() -> Cmd {
+        Cmd::Inspect { uid: 1000 }
     }
 
     fn assert_context_exit_10(result: Result<InvocationContext, HelperError>) {
@@ -239,5 +274,140 @@ mod tests {
         assert_eq!(resolve(&boot, None, 0).unwrap(), InvocationContext::SystemRoot);
         assert_context_exit_10(resolve(&boot, Some("1000"), 0));
         assert_context_exit_10(resolve(&boot, None, 1000));
+    }
+
+    // --- Phase 6 (m3a-headless-grant): `grant`/`revoke`/`inspect` join
+    // `expire` in the SystemRoot arm. Four scenarios per subcommand,
+    // mirroring `expire`'s own coverage above exactly (privilege-admission
+    // "UID Resolution by Invocation Context", "SystemRoot Context Can
+    // Target Any Admitted UID") -------------------------------------------
+
+    #[test]
+    fn grant_resolves_as_system_root_when_real_uid_is_0_and_pkexec_uid_is_unset() {
+        assert_eq!(resolve(&grant_uid(), None, 0).unwrap(), InvocationContext::SystemRoot);
+    }
+
+    #[test]
+    fn grant_invoked_with_pkexec_uid_set_is_rejected() {
+        assert_context_exit_10(resolve(&grant_uid(), Some("1000"), 0));
+    }
+
+    #[test]
+    fn grant_resolves_as_system_root_when_pkexec_uid_is_present_but_empty() {
+        assert_eq!(resolve(&grant_uid(), Some(""), 0).unwrap(), InvocationContext::SystemRoot);
+    }
+
+    #[test]
+    fn grant_invoked_non_root_without_pkexec_uid_is_rejected() {
+        assert_context_exit_10(resolve(&grant_uid(), None, 1000));
+    }
+
+    #[test]
+    fn grant_resolves_system_root_regardless_of_the_uid_value_carried_by_cmd() {
+        // `resolve` decides only the invocation CONTEXT; it never reads
+        // `Cmd::Grant`'s own `uid` field — two different `--uid` values
+        // must resolve identically, proving the context (not the target)
+        // is what this function computes. The target uid itself is read
+        // from `--uid` downstream, in `ops.rs`'s `Subject::root_target`
+        // (Phase 7), never from `PKEXEC_UID` and never from `resolve`'s
+        // return value (privilege-admission "Grant resolves the
+        // SystemRoot context and the explicit target uid").
+        let low = Cmd::Grant { uid: 1, until: None, until_reboot: false };
+        let high = Cmd::Grant { uid: 999_999, until: None, until_reboot: false };
+        assert_eq!(resolve(&low, None, 0).unwrap(), InvocationContext::SystemRoot);
+        assert_eq!(resolve(&high, None, 0).unwrap(), InvocationContext::SystemRoot);
+    }
+
+    #[test]
+    fn revoke_resolves_as_system_root_when_real_uid_is_0_and_pkexec_uid_is_unset() {
+        assert_eq!(resolve(&revoke_uid(), None, 0).unwrap(), InvocationContext::SystemRoot);
+    }
+
+    #[test]
+    fn revoke_invoked_with_pkexec_uid_set_is_rejected() {
+        assert_context_exit_10(resolve(&revoke_uid(), Some("1000"), 0));
+    }
+
+    #[test]
+    fn revoke_resolves_as_system_root_when_pkexec_uid_is_present_but_empty() {
+        assert_eq!(resolve(&revoke_uid(), Some(""), 0).unwrap(), InvocationContext::SystemRoot);
+    }
+
+    #[test]
+    fn revoke_invoked_non_root_without_pkexec_uid_is_rejected() {
+        assert_context_exit_10(resolve(&revoke_uid(), None, 1000));
+    }
+
+    #[test]
+    fn inspect_resolves_as_system_root_when_real_uid_is_0_and_pkexec_uid_is_unset() {
+        assert_eq!(resolve(&inspect_uid(), None, 0).unwrap(), InvocationContext::SystemRoot);
+    }
+
+    #[test]
+    fn inspect_invoked_with_pkexec_uid_set_is_rejected() {
+        assert_context_exit_10(resolve(&inspect_uid(), Some("1000"), 0));
+    }
+
+    #[test]
+    fn inspect_resolves_as_system_root_when_pkexec_uid_is_present_but_empty() {
+        assert_eq!(resolve(&inspect_uid(), Some(""), 0).unwrap(), InvocationContext::SystemRoot);
+    }
+
+    #[test]
+    fn inspect_invoked_non_root_without_pkexec_uid_is_rejected() {
+        assert_context_exit_10(resolve(&inspect_uid(), None, 1000));
+    }
+
+    // The structural guard: a ninth `Cmd` variant must fail to be added
+    // silently. Modeled on `subject.rs`'s
+    // `nothing_but_the_two_constructors_builds_a_subject` — pin something
+    // the compiler enforces (an exhaustive match has no room for a
+    // catch-all pattern to hide behind), not a type signature's spelling.
+    // The earlier version of this house-style guard (Phase 3's
+    // `subject.rs`) counted one exact return-type spelling and a
+    // differently-spelled equivalent constructor walked straight past it
+    // — this guard counts syntax the language itself cannot respell:
+    // there is exactly one way to write a wildcard match arm (`_ =>`),
+    // and exactly one contiguous pattern text names the four SystemRoot
+    // variants today.
+    #[test]
+    fn resolve_match_places_every_systemroot_cmd_variant_explicitly_no_wildcard_absorption() {
+        let src = include_str!("uid.rs");
+        // Everything below `mod tests` is test code; only production
+        // code is in scope for this guard.
+        let production = &src[..src.find("mod tests").unwrap_or(src.len())];
+
+        // No bare `_` match arm anywhere in `resolve`'s `match cmd { .. }`.
+        // A wildcard would let an eighth `Cmd` variant compile silently
+        // into whatever arm `_` happens to catch, instead of failing to
+        // compile — which is the entire point of an exhaustive,
+        // wildcard-free match (the same discipline `journal.rs`'s
+        // `audit_event_for` already applies). The needle is built by
+        // concatenation so this file's own source, including this test,
+        // never contains it contiguously and cannot accidentally match
+        // itself.
+        let wildcard_arm = format!("{}{}", "_", " =>");
+        assert!(
+            !production.contains(wildcard_arm.as_str()),
+            "resolve's match over Cmd must have no wildcard arm — a new Cmd variant must fail \
+             to compile here, not silently resolve to whatever arm '_' happens to catch"
+        );
+
+        // Pin the SystemRoot-producing arm's pattern text exactly: four
+        // named variants, no more, no fewer, each immediately followed
+        // by `{ .. } |` or `{ .. } =>`. A variant folded into this arm —
+        // whether inserted in the middle or appended at either end —
+        // breaks this exact contiguous string, so the change shows up as
+        // a literal diff to this test rather than disappearing into an
+        // already-multi-variant OR-pattern unnoticed.
+        let system_root_arm =
+            "Cmd::Expire { .. } | Cmd::Grant { .. } | Cmd::Revoke { .. } | Cmd::Inspect { .. } =>";
+        assert_eq!(
+            production.matches(system_root_arm).count(),
+            1,
+            "the SystemRoot-producing arm must name exactly Expire, Grant, Revoke, and Inspect — \
+             a fifth variant absorbed here must show up as a literal diff to this pinned \
+             string, not disappear into the arm silently"
+        );
     }
 }
