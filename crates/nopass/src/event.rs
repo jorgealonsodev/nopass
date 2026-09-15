@@ -30,6 +30,13 @@ pub enum Event {
     /// `watch::Watch` observed a debounced change under `<uid>.state`
     /// (design.md D8).
     FileChanged,
+    /// `watch::Watch` observed its watched directory itself being
+    /// removed (or the `notify` backend otherwise reported it could no
+    /// longer be trusted) — spec `tray-state-sync` S4's "or the watch is
+    /// lost" (verify-report.md H4). `App::handle` drops the held `Watch`
+    /// and falls back to reconciliation alone; `Event::Tick` is what
+    /// retries establishing a fresh one.
+    WatchLost,
     /// One firing of the sole periodic timer this design funds.
     Tick,
     /// `ksni::Tray::menu_about_to_show` — the root menu is about to be

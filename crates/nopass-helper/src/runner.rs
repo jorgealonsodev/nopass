@@ -150,25 +150,6 @@ impl Drop for ScriptedRunner {
 mod tests {
     use super::*;
 
-    fn write_temp_script(tag: &str, contents: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        // A per-process counter plus a nanosecond timestamp: PIDs and
-        // `ThreadId`s can both be reused across process/thread-pool
-        // lifetimes, which previously produced a colliding path and an
-        // `ETXTBSY` ("text file busy") race against a script from an
-        // earlier run.
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("nopass_test_{tag}_{}_{nanos}_{n}", std::process::id()));
-        std::fs::write(&path, contents).unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).unwrap();
-        path
-    }
-
     fn lang_c_env() -> Vec<(String, String)> {
         vec![("LANG".to_string(), "C".to_string()), ("LC_ALL".to_string(), "C".to_string())]
     }
@@ -197,9 +178,11 @@ mod tests {
 
     /// Writes an executable script at a RELATIVE path (no leading `/`)
     /// under the crate's test working directory (Cargo runs test
-    /// binaries with `cwd` = the package root — see `write_temp_script`
-    /// for the absolute-path sibling used by other tests). Returns the
-    /// relative name (as a `CommandSpec::program` value would use it),
+    /// binaries with `cwd` = the package root). Every test using this
+    /// helper asserts `NonAbsoluteProgram` is returned *before* any
+    /// spawn, so the file it writes is never exec'd and cannot hit the
+    /// `ETXTBSY` race described below. Returns the relative name (as a
+    /// `CommandSpec::program` value would use it),
     /// the absolute path used only for cleanup, and an absolute marker
     /// file the script touches if it ever actually runs.
     fn write_relative_marker_script(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
@@ -304,15 +287,18 @@ mod tests {
             // assertion adversarial: it proves `env_clear()` actually
             // strips names that were present, not merely names that
             // happened to be absent already.
-            let script_path = write_temp_script("env_dump", "#!/bin/sh\nenv\n");
+            // H1 (verify-report.md): driving `/bin/sh -c "env"` directly,
+            // rather than writing a temp script and exec'ing it, needs no
+            // file this process ever opens for writing — see
+            // `system_runner_treats_signal_death_as_failure_even_under_expect_any`
+            // for the full ETXTBSY race this avoids.
             let spec = CommandSpec {
-                program: script_path.clone(),
-                args: vec![],
+                program: PathBuf::from("/bin/sh"),
+                args: vec!["-c".to_string(), "env".to_string()],
                 env: lang_c_env(),
                 expect: Expect::Zero,
             };
             let outcome = SystemRunner.run(&spec);
-            let _ = std::fs::remove_file(&script_path);
             let outcome = outcome.expect("env-dump script exits 0");
             let stdout = String::from_utf8_lossy(&outcome.stdout);
             let names: Vec<&str> = stdout.lines().filter_map(|line| line.split('=').next()).collect();
@@ -362,15 +348,26 @@ mod tests {
 
     #[test]
     fn system_runner_treats_signal_death_as_failure_even_under_expect_any() {
-        let script_path = write_temp_script("self_kill", "#!/bin/sh\nkill -9 $$\n");
+        // H1 (verify-report.md): this used to write its own temp
+        // executable and immediately exec it. `write_temp_script` created
+        // an executable file and closed it, but `Command::spawn` forks —
+        // and `fork()` clones the whole process's fd table into the
+        // child — so a child forked by an unrelated test thread between
+        // this test's `fs::write` and its own exec could still be
+        // holding that file's write descriptor open (inherited from this
+        // process before this test's own close), which is enough for the
+        // kernel to refuse *this* test's exec with `ETXTBSY`, even though
+        // this process's own fd was already closed. Reproduced
+        // independently at roughly 1 failure in 15 runs. Driving
+        // `/bin/sh -c` directly needs no file this process ever opens
+        // for writing, so there is nothing left to race over.
         let spec = CommandSpec {
-            program: script_path.clone(),
-            args: vec![],
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), "kill -9 $$".to_string()],
             env: lang_c_env(),
             expect: Expect::Any,
         };
         let outcome = SystemRunner.run(&spec);
-        let _ = std::fs::remove_file(&script_path);
         assert!(matches!(outcome, Err(RunnerError::Signaled { .. })), "expected Signaled, got {outcome:?}");
     }
 

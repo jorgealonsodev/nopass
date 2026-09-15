@@ -18,7 +18,7 @@
 //! asynchronously, and `app::run` (Phase 10) is the only reactor-side
 //! consumer of the channel this module's `tx` half feeds.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -26,6 +26,15 @@ use async_channel::Sender;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::event::Event;
+
+/// What the raw `notify` callback (running on `notify`'s own OS thread)
+/// hands to the debounce thread. `Changed` is the ordinary, debounced
+/// case; `Lost` (verify-report.md H4) is not debounced at all — see
+/// [`debounce_loop`].
+enum RawSignal {
+    Changed,
+    Lost,
+}
 
 /// How long the debounce thread waits, after the most recent raw
 /// filesystem event on the watched name, before emitting a single
@@ -71,10 +80,38 @@ impl Watch {
         }
 
         let target_name = format!("{uid}.state");
-        let (raw_tx, raw_rx) = mpsc::channel::<()>();
+        let watched_dir: PathBuf = run_dir.to_path_buf();
+        let (raw_tx, raw_rx) = mpsc::channel::<RawSignal>();
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let Ok(event) = res else { return };
+            let Ok(event) = res else {
+                // The backend itself reported an error rather than an
+                // event — for example an inotify queue overflow, or the
+                // watch descriptor being invalidated by the kernel in a
+                // way that produced no `Remove` event of its own. Either
+                // way this watch can no longer be trusted to keep
+                // reporting, so treat it the same as an observed removal
+                // (verify-report.md H4): signal loss and let the caller
+                // re-establish from scratch.
+                let _ = raw_tx.send(RawSignal::Lost);
+                return;
+            };
+            // The watched directory itself being removed (verified
+            // empirically against this crate's `notify` backend/version:
+            // `EventKind::Remove(RemoveKind::Folder)` at `watched_dir`'s
+            // own path) is "the watch is lost" (spec `tray-state-sync`
+            // S4). `/run/nopass/` is an ordinary tmpfs directory — root
+            // removing it, and the helper's own `statefile::
+            // ensure_run_dir` recreating it, is not prevented by
+            // anything, and ordinary filesystems are free to hand the
+            // recreated directory the SAME inode number the old one
+            // had — so this must be detected from the event stream, not
+            // inferred from a `stat(2)`-based identity comparison, which
+            // a fast remove+recreate can defeat.
+            if matches!(event.kind, EventKind::Remove(_)) && event.paths.iter().any(|p| *p == watched_dir) {
+                let _ = raw_tx.send(RawSignal::Lost);
+                return;
+            }
             if !is_relevant(&event.kind) {
                 return;
             }
@@ -83,7 +120,7 @@ impl Watch {
                 // this closure, owned by `_watcher`) is dropped, so a
                 // send failure here only means `Watch` itself is already
                 // gone — there is nothing left to notify.
-                let _ = raw_tx.send(());
+                let _ = raw_tx.send(RawSignal::Changed);
             }
         })
         .map_err(|_| WatchError::Io)?;
@@ -93,6 +130,20 @@ impl Watch {
         let debounce = std::thread::spawn(move || debounce_loop(raw_rx, tx));
 
         Ok(Watch { _watcher: watcher, _debounce: debounce })
+    }
+
+    /// Identity of this `Watch`'s debounce thread — test-only. A rebuilt
+    /// `Watch` (a fresh `Watch::start` call) spawns a fresh debounce
+    /// thread with a different `ThreadId`, so comparing this across two
+    /// points in time is how `app.rs`'s
+    /// `a_tick_over_an_unchanged_directory_does_not_rebuild_the_watch`
+    /// pins `App::maybe_retry_watch`'s already-held short-circuit
+    /// (verify-report.md H5) — a property no count of observed
+    /// `Event::FileChanged` can distinguish, because at most one `Watch`
+    /// is ever live either way (see that guard's own doc comment).
+    #[cfg(test)]
+    pub(crate) fn debounce_thread_id(&self) -> std::thread::ThreadId {
+        self._debounce.thread().id()
     }
 }
 
@@ -115,17 +166,39 @@ fn is_relevant(kind: &EventKind) -> bool {
 /// event (a paired `MOVED_FROM`/`MOVED_TO`, sometimes trailed by an
 /// `ATTRIB`); this collapses all of them into the one event the spec's
 /// "reacts within budget" scenario counts.
-fn debounce_loop(raw_rx: mpsc::Receiver<()>, tx: Sender<Event>) {
+///
+/// [`RawSignal::Lost`] (verify-report.md H4) is never debounced: it is
+/// not a burst of related writes to collapse, and once the watched
+/// directory itself is gone there is nothing further this `Watch` can
+/// ever report, so the loop emits [`Event::WatchLost`] immediately and
+/// exits — `App` is the one place that decides when to retry, on the
+/// next `Trigger::Tick` (spec `tray-state-sync`).
+fn debounce_loop(raw_rx: mpsc::Receiver<RawSignal>, tx: Sender<Event>) {
     let window = Duration::from_millis(DEBOUNCE_MS);
-    while raw_rx.recv().is_ok() {
-        while raw_rx.recv_timeout(window).is_ok() {
-            // Keep absorbing events while they keep arriving inside the
-            // window; the loop below only proceeds once it truly quiets
-            // down.
+    while let Ok(first) = raw_rx.recv() {
+        if matches!(first, RawSignal::Lost) {
+            let _ = tx.send_blocking(Event::WatchLost);
+            return;
+        }
+        // Keep absorbing signals while they keep arriving inside the
+        // window; the send below only proceeds once it truly quiets
+        // down. A `Lost` arriving inside the same window as a `Changed`
+        // is remembered rather than silently dropped, so a
+        // directory-replaced-immediately-after-a-write burst still
+        // surfaces the loss.
+        let mut lost_too = false;
+        while let Ok(next) = raw_rx.recv_timeout(window) {
+            if matches!(next, RawSignal::Lost) {
+                lost_too = true;
+            }
         }
         if tx.send_blocking(Event::FileChanged).is_err() {
             // The reactor side — and therefore the whole `Watch` — is
             // gone; nothing left to debounce for.
+            return;
+        }
+        if lost_too {
+            let _ = tx.send_blocking(Event::WatchLost);
             return;
         }
     }

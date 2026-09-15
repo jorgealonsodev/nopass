@@ -156,18 +156,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn write_temp_script(tag: &str, contents: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("nopass_tray_test_{tag}_{}_{nanos}_{n}", std::process::id()));
-        std::fs::write(&path, contents).unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).unwrap();
-        path
-    }
-
     /// Writes an executable script at a RELATIVE path (no leading `/`)
     /// under the crate's test working directory (Cargo runs test binaries
     /// with `cwd` = the package root). Returns the relative name (as a
@@ -214,10 +202,22 @@ mod tests {
 
     #[test]
     fn system_runner_treats_signal_death_as_a_failure() {
-        let script_path = write_temp_script("self_kill", "#!/bin/sh\nkill -9 $$\n");
-        let spec = CommandSpec { program: script_path.clone(), args: vec![], env: env_c() };
+        // H1 (verify-report.md): this used to write its own temp
+        // executable and immediately exec it, which raced every other
+        // test thread's own `Command::spawn` — `fork()` clones the whole
+        // process's fd table into the child, so a child forked by an
+        // unrelated thread between this test's `fs::write` and its own
+        // exec could still hold this file's write descriptor open long
+        // enough to make our exec fail with `ETXTBSY`, even though this
+        // test's own writer fd was already closed. Driving `/bin/sh -c`
+        // directly needs no file this process ever opens for writing, so
+        // the race has no file to race over.
+        let spec = CommandSpec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), "kill -9 $$".to_string()],
+            env: env_c(),
+        };
         let result = SystemRunner.run(&spec);
-        let _ = std::fs::remove_file(&script_path);
         match result {
             Err(RunnerError::Signaled { .. }) => {}
             other => panic!("expected RunnerError::Signaled, got {other:?}"),

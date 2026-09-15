@@ -69,24 +69,44 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// that we produced the string we meant to produce.
 ///
 /// `systemd-analyze calendar` needs no root and no running systemd, only the
-/// binary. Where it is absent — a container image without systemd, a non-Linux
-/// developer machine — the test skips loudly rather than passing quietly,
-/// because a silent skip is how the original defect survived its own container
-/// test.
+/// binary. Where it is absent — a container image without systemd, a
+/// non-Linux developer machine — these tests FAIL rather than skip.
+///
+/// H3 (verify-report.md): an earlier version of these tests "skipped
+/// loudly" by `eprintln!`-ing and returning early. That does not work:
+/// `cargo test` captures the stderr of a passing test, so on a machine
+/// without `systemd-analyze` both tests reported `ok` in 0.00 s with exit
+/// 0 — the exact silent-pass signature that let the RFC-3339-vs-calendar
+/// defect this module exists to fix survive its own container test in the
+/// first place. A skip that is invisible in the gate's own exit status and
+/// default output is not a skip a reviewer can trust; it is the same
+/// mechanism that hid the original bug, reproduced inside its own remedy.
+///
+/// So this crate takes the harder, more honest position: `systemd-analyze`
+/// is a required tool for `cargo test -p nopass-core`, not an optional one.
+/// A machine that cannot provide it must not be able to pass this gate
+/// silently — it has to either install `systemd-analyze` or make a visible
+/// decision (deleting or explicitly `#[ignore]`-ing these tests, which
+/// shows up as a nonzero "ignored" count in `cargo test`'s own summary,
+/// unlike a captured `eprintln!`) to run without it.
 #[cfg(test)]
 mod systemd_contract {
     use super::format_systemd_calendar;
 
+    fn require_systemd_analyze() {
+        let probe = std::process::Command::new("systemd-analyze").arg("--version").output().expect(
+            "systemd-analyze must be on PATH to run this test: it is the only thing that \
+             validates the --on-calendar value systemd actually accepts, and this crate would \
+             rather fail this test loudly than let that contract degrade back to being pinned by \
+             our own assertion alone (verify-report.md H3). Install systemd-analyze, or make an \
+             explicit, visible decision (e.g. #[ignore]) to run this crate's tests without it.",
+        );
+        assert!(probe.status.success(), "systemd-analyze exists but does not run");
+    }
+
     #[test]
     fn calendar_strings_are_accepted_by_systemd_analyze() {
-        let Ok(probe) = std::process::Command::new("systemd-analyze").arg("--version").output() else {
-            eprintln!(
-                "SKIPPED calendar_strings_are_accepted_by_systemd_analyze: \
-                 systemd-analyze is not on PATH, so systemd's own parser cannot be consulted here"
-            );
-            return;
-        };
-        assert!(probe.status.success(), "systemd-analyze exists but does not run");
+        require_systemd_analyze();
 
         // One ordinary instant, one epoch-adjacent, one leap day, one far
         // future: the same spread the formatter's own vectors use.
@@ -110,11 +130,7 @@ mod systemd_contract {
         // Pins WHY the two renderings exist. If a future change makes systemd
         // accept the RFC-3339 form, this test fails and someone re-reads the
         // decision instead of discovering it by accident years later.
-        let Ok(probe) = std::process::Command::new("systemd-analyze").arg("--version").output() else {
-            eprintln!("SKIPPED the_rfc3339_rendering_is_the_one_systemd_refuses: systemd-analyze is not on PATH");
-            return;
-        };
-        assert!(probe.status.success());
+        require_systemd_analyze();
 
         let rfc = super::format_utc_rfc3339(1_789_000_000);
         let out = std::process::Command::new("systemd-analyze").arg("calendar").arg(&rfc).output().unwrap();

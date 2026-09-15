@@ -173,21 +173,55 @@ impl App {
 
     /// Establishes the inotify watch if it is not already held — called
     /// once at [`run`]'s startup and again on every `Trigger::Tick` for
-    /// as long as it keeps failing (design.md D8; spec `tray-state-sync`
-    /// "Inotify Watch With Missing-Directory Fallback"; verify-report.md
-    /// G1). `/run/nopass/` cannot un-exist once created, so a held watch
-    /// is never replaced: there is nothing a second `Watch::start` call
-    /// could fix, and starting one anyway would leak a second `notify`
-    /// backend and debounce thread for the rest of the process's life.
+    /// as long as it keeps failing, and again after a held watch is lost
+    /// (design.md D8; spec `tray-state-sync` "Inotify Watch With
+    /// Missing-Directory Fallback"; verify-report.md G1, H4, H5).
+    ///
+    /// **What `self.watch.is_some()` does NOT do**, despite an earlier
+    /// version of this doc comment and of the pinning test's own
+    /// comments claiming otherwise (verify-report.md H5): it does not
+    /// prevent a duplicate *live* watch. `self.watch = Some(new)`
+    /// already drops whatever `Watch` was previously there, on
+    /// assignment, which stops that watch's `notify` backend and lets
+    /// its debounce thread exit — so at most one is ever live regardless
+    /// of whether this short-circuit fires. Experiment N2 (deleting the
+    /// guard, but not leaking the old `Watch`) proved exactly that:
+    /// every gate stayed green. What the guard actually buys is avoiding
+    /// a needless teardown and rebuild of the watcher and its debounce
+    /// thread — and the small window that rebuild opens in which a
+    /// write could land between the old watch stopping and the new one
+    /// starting — on every 60 s tick for the rest of the process's life
+    /// when nothing has changed. See
+    /// `a_tick_over_an_unchanged_directory_does_not_rebuild_the_watch`
+    /// for the test that actually pins that.
+    ///
+    /// **What actually clears `self.watch` so this can retry a lost
+    /// watch**: `Event::WatchLost`, handled in [`App::handle`] — raised
+    /// by `watch.rs`'s own callback when it observes the watched
+    /// directory itself being removed, or when the `notify` backend
+    /// reports an error. `/run/nopass/` is an ordinary tmpfs directory,
+    /// not a guarantee that never changes underneath a running process:
+    /// nothing prevents root removing it, and the helper's own
+    /// `statefile::ensure_run_dir` then recreates it — on a filesystem
+    /// free to hand the new directory the very same inode number, which
+    /// is why this is detected from the event stream rather than a
+    /// `stat(2)`-based identity check (see `watch.rs`'s own comment on
+    /// the point; verified empirically against this crate's `notify`
+    /// version before relying on it).
     fn maybe_retry_watch(&mut self) {
         if self.watch.is_some() {
             return;
         }
         match Watch::start(&self.run_dir, self.uid, self.events_tx.clone()) {
             Ok(watch) => self.watch = Some(watch),
-            Err(_) => eprintln!(
-                "nopass: could not watch {} yet (falling back to the 60s tick alone; will retry next tick)",
-                self.run_dir.display()
+            Err(_) => self.notify.post(
+                Category::Environment,
+                "Could not watch for changes",
+                &format!(
+                    "NoPass could not set up a watch on {}. Falling back to checking every 60 \
+                     seconds; it will keep retrying.",
+                    self.run_dir.display()
+                ),
             ),
         }
     }
@@ -352,6 +386,26 @@ impl App {
                 // on each 60 s tick" (verify-report.md G1).
                 self.maybe_retry_watch();
                 self.reconcile(Trigger::Tick, now);
+            }
+            Event::WatchLost => {
+                // S4's "or the watch is lost" half (verify-report.md
+                // H4): drop the dead `Watch` and warn through the
+                // notification port — an observed warning, not an
+                // `eprintln!` nothing reads. `Event::Tick`'s existing
+                // retry (above) is what re-establishes it; this handler
+                // does not retry immediately, so the retry cadence stays
+                // exactly "on each 60 s tick" per the spec text.
+                self.watch = None;
+                self.notify.post(
+                    Category::Environment,
+                    "Lost the change watch",
+                    &format!(
+                        "NoPass's watch on {} was lost — the directory was replaced or removed. \
+                         Falling back to checking every 60 seconds; it will retry establishing a \
+                         new watch on the next tick.",
+                        self.run_dir.display()
+                    ),
+                );
             }
             Event::MenuOpened => self.reconcile(Trigger::MenuOpened, now),
             Event::ToggleRequested => self.handle_toggle(now),
@@ -786,15 +840,162 @@ mod tests {
             "the retried watch must observe a write under the run directory exactly once"
         );
 
-        // Tick #3: a watch is already held — this must not spawn a
-        // second one. A duplicate watch would double the event below.
+        // Tick #3: a watch is already held and the directory has not
+        // changed — the write below must still be observed exactly once.
+        // NOTE (verify-report.md H5): this assertion alone does NOT prove
+        // the guard skipped a rebuild. `self.watch = Some(new)` already
+        // drops any previous `Watch` on assignment, so at most one watch
+        // is ever LIVE whether or not `maybe_retry_watch` rebuilds on
+        // this tick — a rebuilt watch would still be the one that
+        // observes the write below, and the count would still be 1.
+        // `a_tick_over_an_unchanged_directory_does_not_rebuild_the_watch`
+        // is the test that actually pins "no rebuild happened", by
+        // comparing the debounce thread's identity across the tick.
         assert!(app.handle(Event::Tick));
         std::fs::write(run_dir.join("1000.state"), b"{}").unwrap();
         assert_eq!(
             count_file_changed_within(&rx, Duration::from_millis(700)),
             1,
-            "a second watch would double this event"
+            "at most one watch is ever live, rebuilt or not"
         );
+    }
+
+    #[test]
+    fn a_tick_over_an_unchanged_directory_does_not_rebuild_the_watch() {
+        // H5 (verify-report.md): experiment N2 — deleting the
+        // `self.watch.is_some()` short-circuit from `maybe_retry_watch`,
+        // without also leaking the old `Watch` — left every gate green,
+        // including the G1 test above, because assigning a fresh `Watch`
+        // over `self.watch` already drops the old one. No test that only
+        // counts observed `FileChanged` events can tell "rebuilt every
+        // tick" apart from "built once and reused". This test asserts
+        // the thing the guard actually buys instead: the exact same
+        // debounce thread survives a tick over a directory whose
+        // identity has not changed. Removing the guard rebuilds the
+        // watch — and therefore spawns a fresh debounce thread — on
+        // every tick, which fails the `assert_eq!` below even though the
+        // event-count test above keeps passing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_dir = tmp.path().join("nopass");
+        std::fs::create_dir(&run_dir).unwrap();
+        let state_path = run_dir.join("1000.state");
+
+        let runner: Arc<dyn CommandRunner> = Arc::new(AnyCommandRunner::new(vec![
+            Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] }),
+            Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] }),
+        ]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let (tx, rx) = async_channel::unbounded();
+        let mut app = App::new(
+            "jorge".to_string(),
+            state_path,
+            Mode::Full,
+            tray,
+            notify,
+            runner,
+            PathBuf::from("/usr/bin/pkexec"),
+            PathBuf::from("/usr/bin/sudo"),
+            Locale::default(),
+            tx,
+            rx,
+            run_dir.clone(),
+            1000,
+        );
+
+        assert!(app.handle(Event::Tick));
+        let first_thread =
+            app.watch.as_ref().expect("directory exists, the watch must be established").debounce_thread_id();
+
+        assert!(app.handle(Event::Tick));
+        let second_thread = app.watch.as_ref().expect("the watch must still be held").debounce_thread_id();
+
+        assert_eq!(
+            first_thread, second_thread,
+            "a tick over an unchanged directory must not rebuild the watch"
+        );
+    }
+
+    /// Blocks until `Event::WatchLost` is seen, feeding every other event
+    /// received along the way through `app.handle` exactly as `run`'s own
+    /// loop would (the forced `Trigger::Tick` probe's own `ProbeFinished`
+    /// is expected traffic here and must not be mistaken for a timeout).
+    fn drain_until_watch_lost(app: &mut App, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(remaining > Duration::ZERO, "timed out waiting for Event::WatchLost");
+            match recv_and_handle(app, remaining) {
+                Some(Event::WatchLost) => return,
+                Some(_) => continue,
+                None => panic!("timed out waiting for Event::WatchLost"),
+            }
+        }
+    }
+
+    #[test]
+    fn losing_the_watch_falls_back_and_warns_and_a_later_tick_reestablishes_it() {
+        // H4 (verify-report.md): S4's "or the watch is lost" half, and
+        // "show a warning". `/run/nopass/` is an ordinary tmpfs
+        // directory, not a guarantee — nothing prevents it being removed
+        // and recreated (exactly what the helper's own
+        // `statefile::ensure_run_dir` does). This drives that scenario
+        // end to end: establish the watch, remove the directory it is
+        // watching, let `watch.rs`'s own loss detection raise
+        // `Event::WatchLost`, assert the fallback warns through the
+        // notification port (an observed warning, not an `eprintln!`
+        // nothing reads), recreate the directory, and assert the next
+        // tick re-establishes a working watch.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_dir = tmp.path().join("nopass");
+        std::fs::create_dir(&run_dir).unwrap();
+        let state_path = run_dir.join("1000.state");
+
+        let runner: Arc<dyn CommandRunner> = Arc::new(AnyCommandRunner::new(vec![
+            Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] }),
+            Ok(SpawnOutcome { status: Some(1), stdout: vec![], stderr: vec![] }),
+        ]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let (tx, rx) = async_channel::unbounded();
+        let mut app = App::new(
+            "jorge".to_string(),
+            state_path,
+            Mode::Full,
+            tray,
+            notify.clone(),
+            runner,
+            PathBuf::from("/usr/bin/pkexec"),
+            PathBuf::from("/usr/bin/sudo"),
+            Locale::default(),
+            tx,
+            rx,
+            run_dir.clone(),
+            1000,
+        );
+
+        assert!(app.handle(Event::Tick));
+        assert!(app.watch.is_some(), "the watch must be established over the original directory");
+
+        // Simulate root removing `/run/nopass`.
+        std::fs::remove_dir_all(&run_dir).unwrap();
+
+        drain_until_watch_lost(&mut app, Duration::from_secs(2));
+        assert!(app.watch.is_none(), "a lost watch must be dropped, not held onto as though still live");
+
+        let posts = notify.posts.lock().unwrap();
+        assert!(
+            posts.iter().any(|(c, s, _)| *c == Category::Environment && s == "Lost the change watch"),
+            "losing the watch must post an observed warning through the notification port, not just \
+             an eprintln! nothing reads: {posts:?}"
+        );
+        drop(posts);
+
+        // The helper recreates `/run/nopass` on demand; simulate that,
+        // then let the next tick retry, exactly like the startup case.
+        std::fs::create_dir(&run_dir).unwrap();
+        assert!(app.handle(Event::Tick));
+        assert!(app.watch.is_some(), "a later tick must re-establish the watch once the directory exists again");
     }
 
     // ---- G9 (verify-report.md): the MenuOpened cache-staleness clause
