@@ -69,20 +69,15 @@ fn dispatch(
         Cmd::Disable => ops::disable(layout, runner, binaries),
         Cmd::Status => ops::status(layout),
         Cmd::Expire { uid, boot } => ops::expire(layout, runner, binaries, uid, boot),
-        // PLACEHOLDER, not the real m3a-headless-grant wiring: Phase 7
-        // ("The ops.rs Reuse Seam") is what routes these to
-        // `ops::grant`/`ops::revoke`/`ops::inspect`
-        // (openspec/changes/m3a-headless-grant/tasks.md). Phase 5 is the
-        // CLI parse surface only — this arm exists solely to keep the
-        // crate compiling now that `Cmd` has three new variants, and
-        // returns the narrowest honest result: `uid::resolve`'s own
-        // Phase 6 placeholder (uid.rs) already rejects all three with
-        // `HelperError::Context` (exit 10), so this arm reproduces that
-        // exact outcome directly rather than reaching a handler that does
-        // not exist yet.
-        Cmd::Grant { .. } | Cmd::Revoke { .. } | Cmd::Inspect { .. } => {
-            Err(HelperError::Context("not yet wired: ops.rs Phase 7 (m3a-headless-grant) handles this subcommand"))
-        }
+        // m3a-headless-grant Phase 7 ("The ops.rs Reuse Seam"): the real
+        // wiring, replacing the Phase 5 placeholder that reproduced
+        // `uid::resolve`'s own exit-10 rejection directly. `ops::grant`/
+        // `ops::revoke`/`ops::inspect` each build a `SystemRoot`-sourced
+        // `Subject` and reuse `enable_inner`/`disable_inner`/`status_inner`
+        // unchanged (design.md §2).
+        Cmd::Grant { uid, until, until_reboot } => ops::grant(layout, runner, binaries, uid, until, until_reboot),
+        Cmd::Revoke { uid } => ops::revoke(layout, runner, binaries, uid),
+        Cmd::Inspect { uid } => ops::inspect(layout, uid),
     }
 }
 
@@ -125,6 +120,14 @@ mod tests {
             Cmd::Status,
             Cmd::Expire { uid: Some(1000), boot: false },
             Cmd::Expire { uid: None, boot: true },
+            // m3a-headless-grant Phase 7 (task 7.15): the three headless
+            // subcommands join the loop, proving `dispatch` reaches the
+            // real `ops::grant`/`ops::revoke`/`ops::inspect` entry points
+            // — each resolves to exit 10 under this unprivileged test
+            // process, exactly like every other subcommand above.
+            Cmd::Grant { uid: 1000, until: Some(100), until_reboot: false },
+            Cmd::Revoke { uid: 1000 },
+            Cmd::Inspect { uid: 1000 },
         ] {
             let err = dispatch(cmd, &layout, &SystemRunner, &binaries).unwrap_err();
             assert_eq!(err.exit_code(), 10);

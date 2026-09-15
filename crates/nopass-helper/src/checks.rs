@@ -383,4 +383,40 @@ mod tests {
         assert!(matches!(err, HelperError::Internal(_)), "expected Internal, got {err:?}");
         assert_eq!(err.exit_code(), 1);
     }
+
+    // --- task 7.1: `admit_root_target`'s expected admission causes,
+    // documented here — deliberately in `checks.rs`, not `ops.rs` — before
+    // the function exists at all (design.md §3 "one shared wrapper-level
+    // function"; privilege-admission "A SystemRoot-context target still
+    // fails UID Range Admission the same way"). This test targets the
+    // not-yet-created `crate::ops::admit_root_target` by name and fails to
+    // COMPILE until task 7.2 lands, not merely fails an assertion.
+    #[test]
+    fn admit_root_target_rejects_every_admit_uid_cause_with_exit_11_and_a_distinct_reason() {
+        use crate::journal::AuditEvent;
+        use crate::ops::admit_root_target;
+        use crate::subject::Subject;
+        use crate::uid::InvocationContext;
+
+        let default_range = UidRange { min: 1000, max: 60_000 };
+        let unknown_range = UidRange { min: 1000, max: 4_294_967_294 };
+        let cases: [(u32, UidRange, &str); 4] = [
+            (0, default_range, "uid_rejected_root"),
+            (500, default_range, "uid_rejected_below_min"),
+            (99_999, default_range, "uid_rejected_above_max"),
+            (4_294_967_294, unknown_range, "uid_rejected_unknown"),
+        ];
+
+        for (uid, range, expected_reason) in cases {
+            let subject = Subject::root_target(InvocationContext::SystemRoot, uid, AuditEvent::Grant)
+                .expect("SystemRoot context must build a Subject for any explicit uid");
+            let err = admit_root_target(subject, &range).unwrap_err();
+            assert_eq!(err.exit_code(), 11, "uid {uid}: expected exit 11, cause {expected_reason}");
+            assert_eq!(
+                err.audit_reason(),
+                expected_reason,
+                "uid {uid}: expected audit reason {expected_reason}"
+            );
+        }
+    }
 }

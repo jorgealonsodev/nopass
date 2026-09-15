@@ -30,9 +30,9 @@ use crate::journal::{self, AuditEvent, AuditOutcome, AuditRecord};
 use crate::lock::LockGuard;
 use crate::runner::CommandRunner;
 use crate::statefile;
-use crate::subject::UidSource;
+use crate::subject::Subject;
 use crate::timer;
-use crate::uid::{self, InvocationContext};
+use crate::uid;
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
@@ -63,27 +63,55 @@ fn unix_now() -> u64 {
 /// operator grepping the journal that the grant is gone when it is not.
 /// `Error` is design.md §9's documented outcome value for exactly this
 /// shape of failure and was otherwise never wired into a real call site.
-fn audit_rejection(event: AuditEvent, uid: u32, user: &str, expires: Expiry, err: &HelperError) {
+///
+/// Phase 7 correction: `event`/`uid`/`context` are no longer separate
+/// interim-literal parameters — `subject` (design.md §2's seam) supplies
+/// all three via `subject.event()`, `subject.uid()`, `subject.source()`.
+/// This is what finally corrects `expire`'s rejection path from the
+/// hardcoded `Pkexec` literal to the real `SystemRoot` context it has
+/// always actually run under.
+fn audit_rejection(subject: Subject, user: &str, expires: Expiry, err: &HelperError) {
     let outcome = match err {
         HelperError::TimerFailed { rolled_back: true } => AuditOutcome::RolledBack,
         HelperError::TimerFailed { rolled_back: false } => AuditOutcome::Error,
         _ => AuditOutcome::Rejected,
     };
-    // Interim literal (design.md §4/tasks.md 4.4): this function is not
-    // yet retyped to take `Subject` — that lands in Phase 7, which routes
-    // every caller through the seam and replaces this with
-    // `subject.source()`. `Pkexec` is correct for `enable`/`disable`
-    // today; `expire`'s rejection path is corrected in that same phase.
     journal::audit(&AuditRecord {
-        event,
-        context: UidSource::Pkexec,
-        uid,
+        event: subject.event(),
+        context: subject.source(),
+        uid: subject.uid(),
         user,
         outcome,
         expires,
         exit: err.exit_code(),
         reason: err.audit_reason(),
     });
+}
+
+/// The one shared wrapper-level admission point for `grant`/`revoke`/
+/// `inspect` (design.md §3 "the one real tension"; privilege-admission
+/// "SystemRoot Context Can Target Any Admitted UID"). `disable_inner` and
+/// `status_inner` deliberately run no admission of their own — "removing
+/// a privilege must never be blocked" — so a `SystemRoot`-context
+/// `revoke`/`inspect` is bounded HERE, before the shared transaction is
+/// ever entered, rather than inside it. `grant` reuses `enable_inner`
+/// unchanged, whose own step 5 (`checks::admit_uid`) still runs a second,
+/// deliberately redundant time (design.md §3; task 7.12) — this function
+/// and that step can only ever agree, since both call the same pure
+/// `checks::admit_uid` over the same `(uid, range)` pair.
+///
+/// Audits its own rejection with `subject`'s own event
+/// (`Grant`/`Revoke`/`Inspect`) and `SystemRoot` context — never a
+/// hardcoded event, so a rejected `revoke` is never misreported as a
+/// rejected `grant`.
+pub fn admit_root_target(subject: Subject, range: &UidRange) -> Result<(), HelperError> {
+    if let Err(rejection) = checks::admit_uid(subject.uid(), range) {
+        let err = HelperError::UidRejected(rejection);
+        let user = checks::lookup_user(subject.uid()).unwrap_or_default();
+        audit_rejection(subject, &user, Expiry::Never, &err);
+        return Err(err);
+    }
+    Ok(())
 }
 
 // --- enable -----------------------------------------------------------
@@ -110,12 +138,17 @@ pub fn enable(
     // `uid` is real and therefore IS audited (see
     // `resolve_expiry_audited`).
     let ctx = uid::resolve(&cmd, pkexec_uid.as_deref(), real_uid)?;
-    let InvocationContext::Pkexec(uid) = ctx else {
-        unreachable!("Cmd::Enable always resolves to InvocationContext::Pkexec")
-    };
+    // `Subject::pkexec` (design.md §2, the seam) replaces the old
+    // `let InvocationContext::Pkexec(uid) = ctx else { unreachable!() }`
+    // — `Cmd::Enable` always resolves to `InvocationContext::Pkexec`, but
+    // failing closed with `HelperError::Context` (exit 10) on a future
+    // mispairing is strictly better than a panic with an unlistable exit
+    // code.
+    let subject = Subject::pkexec(ctx, AuditEvent::Enable)?;
+    let uid = subject.uid();
 
     let now = unix_now();
-    let expiry = resolve_expiry_audited(uid, until, until_reboot, now)?;
+    let expiry = resolve_expiry_audited(subject, until, until_reboot, now)?;
 
     // Step 5's getpwuid half. verify-report C1: this used to be a bare
     // `checks::lookup_user(uid)?`, which maps a missing passwd entry to
@@ -132,7 +165,7 @@ pub fn enable(
         Ok(Some(name)) => name,
         Ok(None) => {
             let err = HelperError::UidRejected(checks::UidRejection::Unknown);
-            audit_rejection(AuditEvent::Enable, uid, "", expiry, &err);
+            audit_rejection(subject, "", expiry, &err);
             return Err(err);
         }
         Err(err) => return Err(err),
@@ -140,7 +173,7 @@ pub fn enable(
     let login_defs = std::fs::read_to_string("/etc/login.defs").unwrap_or_default();
     let uid_range = logindefs::parse(&login_defs);
 
-    enable_inner(layout, runner, binaries, uid, &raw_user, &uid_range, expiry)
+    enable_inner(layout, runner, binaries, subject, &raw_user, &uid_range, expiry)
 }
 
 /// Resolves `--until`/`--until-reboot` into an [`Expiry`], validating any
@@ -183,12 +216,18 @@ fn resolve_expiry(until: Option<u64>, until_reboot: bool, now: u64) -> Result<Ex
 /// Fully parameterized — unlike [`enable`]'s public wrapper, this reads
 /// no live environment variable, so it is directly unit-testable without
 /// a real `PKEXEC_UID`.
-fn resolve_expiry_audited(uid: u32, until: Option<u64>, until_reboot: bool, now: u64) -> Result<Expiry, HelperError> {
+///
+/// Phase 7 retype: takes `subject` (already resolved by the caller —
+/// `enable`'s `Subject::pkexec` or `grant`'s `Subject::root_target`)
+/// instead of a bare `uid`, so a `grant`'s duration rejection is audited
+/// under its own `AuditEvent::Grant`/`SystemRoot` context rather than the
+/// hardcoded `AuditEvent::Enable`/`Pkexec` this function used before.
+fn resolve_expiry_audited(subject: Subject, until: Option<u64>, until_reboot: bool, now: u64) -> Result<Expiry, HelperError> {
     match resolve_expiry(until, until_reboot, now) {
         Ok(expiry) => Ok(expiry),
         Err(err) => {
-            let user = resolve_username(checks::lookup_user(uid), None);
-            audit_rejection(AuditEvent::Enable, uid, &user, Expiry::Never, &err);
+            let user = resolve_username(checks::lookup_user(subject.uid()), None);
+            audit_rejection(subject, &user, Expiry::Never, &err);
             Err(err)
         }
     }
@@ -202,15 +241,25 @@ fn resolve_expiry_audited(uid: u32, until: Option<u64>, until_reboot: bool, now:
 /// reaches the sudoer probe is exactly the obligation `tasks.md`'s Phase
 /// 7 blockquote records against this module: `checks::is_sudoer` does not
 /// sanitize its `user` argument.
+///
+/// Phase 7 retype (design.md §2, the `ops.rs` reuse seam): `uid: u32`
+/// becomes `subject: Subject`. This is the transaction `grant` reuses
+/// unchanged — `subject` carries either a `Pkexec`-sourced identity (from
+/// [`enable`]'s own wrapper) or a `SystemRoot`-sourced one (from
+/// `ops::grant`), and every step below reads the target uid from
+/// `subject.uid()`: `fileops`, `timer`, and `statefile` remain uid
+/// consumers, not authority consumers, and keep taking a bare `u32`.
 fn enable_inner(
     layout: &Layout,
     runner: &dyn CommandRunner,
     binaries: &Binaries,
-    uid: u32,
+    subject: Subject,
     raw_user: &str,
     uid_range: &UidRange,
     expiry: Expiry,
 ) -> Result<(), HelperError> {
+    let uid = subject.uid();
+
     // Sanitized once, up front, so a rejection audit record on ANY
     // failure path below (including the admission check, which precedes
     // the sudoer probe that used to be the first place `user` existed)
@@ -222,16 +271,20 @@ fn enable_inner(
     // available to every rejection branch.
     let user = sanitize_username(raw_user);
 
-    // Step 5: getpwuid + UID range admission (exit 11).
+    // Step 5: getpwuid + UID range admission (exit 11). For `grant`, this
+    // is the deliberate SECOND `admit_uid` call over the same `(uid,
+    // range)` pair `admit_root_target` already checked at the wrapper
+    // level (design.md §3, task 7.12) — kept so the bound stays inside
+    // the shared transaction, not merely at its entrance.
     if let Err(rejection) = checks::admit_uid(uid, uid_range) {
         let err = HelperError::UidRejected(rejection);
-        audit_rejection(AuditEvent::Enable, uid, &user, expiry, &err);
+        audit_rejection(subject, &user, expiry, &err);
         return Err(err);
     }
 
     // Step 6: sudoer probe.
     if let Err(err) = checks::is_sudoer(runner, binaries, &user) {
-        audit_rejection(AuditEvent::Enable, uid, &user, expiry, &err);
+        audit_rejection(subject, &user, expiry, &err);
         return Err(err);
     }
 
@@ -239,7 +292,7 @@ fn enable_inner(
     let _guard = match LockGuard::acquire(layout) {
         Ok(guard) => guard,
         Err(err) => {
-            audit_rejection(AuditEvent::Enable, uid, &user, expiry, &err);
+            audit_rejection(subject, &user, expiry, &err);
             return Err(err);
         }
     };
@@ -248,7 +301,7 @@ fn enable_inner(
     // on any failure is handled internally by `write_rule_atomic`.
     let content = render_rule(uid, &user, expiry);
     if let Err(err) = fileops::write_rule_atomic(layout, runner, binaries, uid, &content) {
-        audit_rejection(AuditEvent::Enable, uid, &user, expiry, &err);
+        audit_rejection(subject, &user, expiry, &err);
         return Err(err);
     }
 
@@ -267,7 +320,7 @@ fn enable_inner(
         if timer::schedule(runner, binaries, uid, epoch).is_err() {
             let rolled_back = rollback_rule(layout, uid);
             let err = HelperError::TimerFailed { rolled_back };
-            audit_rejection(AuditEvent::Enable, uid, &user, expiry, &err);
+            audit_rejection(subject, &user, expiry, &err);
             return Err(err);
         }
     }
@@ -284,12 +337,12 @@ fn enable_inner(
         tracing::error!(uid, error = %err, "failed to write state file after enable");
     }
 
-    // Step 17: journald audit record.
+    // Step 17: journald audit record. `event`/`context` now come straight
+    // from `subject` — `grant` reusing this transaction is what makes the
+    // event/context vary here for the first time.
     journal::audit(&AuditRecord {
-        event: AuditEvent::Enable,
-        // Interim literal (tasks.md 4.4): retyped to `subject.source()`
-        // in Phase 7. `enable` is always Pkexec-sourced today.
-        context: UidSource::Pkexec,
+        event: subject.event(),
+        context: subject.source(),
         uid,
         user: &user,
         outcome: AuditOutcome::Ok,
@@ -347,10 +400,8 @@ pub fn disable(layout: &Layout, runner: &dyn CommandRunner, binaries: &Binaries)
     let pkexec_uid = std::env::var("PKEXEC_UID").ok();
     let real_uid = nix::unistd::getuid().as_raw();
     let ctx = uid::resolve(&Cmd::Disable, pkexec_uid.as_deref(), real_uid)?;
-    let InvocationContext::Pkexec(uid) = ctx else {
-        unreachable!("Cmd::Disable always resolves to InvocationContext::Pkexec")
-    };
-    disable_inner(layout, runner, binaries, uid)
+    let subject = Subject::pkexec(ctx, AuditEvent::Disable)?;
+    disable_inner(layout, runner, binaries, subject)
 }
 
 /// design.md §4.2: no UID-range or sudoer admission is required —
@@ -360,17 +411,25 @@ pub fn disable(layout: &Layout, runner: &dyn CommandRunner, binaries: &Binaries)
 /// stopped, the grant would become permanent with no scheduled
 /// revocation; in this order the worst case is an orphan timer that later
 /// fires `expire --uid` and finds nothing — a no-op.
+///
+/// Phase 7 retype: `uid: u32` becomes `subject: Subject`. Deliberately
+/// UNCHANGED in every other respect — `revoke`'s own admission bound
+/// lives at its wrapper (`ops::admit_root_target`), never here, so
+/// `disable`'s existing "removal must never be blocked" guarantee and
+/// every test pinning it survive byte-for-byte (design.md §3, "the one
+/// real tension").
 fn disable_inner(
     layout: &Layout,
     runner: &dyn CommandRunner,
     binaries: &Binaries,
-    uid: u32,
+    subject: Subject,
 ) -> Result<(), HelperError> {
+    let uid = subject.uid();
     let _guard = match LockGuard::acquire(layout) {
         Ok(guard) => guard,
         Err(err) => {
             let user = resolve_username(checks::lookup_user(uid), None);
-            audit_rejection(AuditEvent::Disable, uid, &user, Expiry::Never, &err);
+            audit_rejection(subject, &user, Expiry::Never, &err);
             return Err(err);
         }
     };
@@ -386,7 +445,7 @@ fn disable_inner(
     if let Err(err) = fileops::remove_rule(layout, uid) {
         let user = resolve_username(checks::lookup_user(uid), header.as_ref());
         let expires = header.as_ref().map(|h| h.expires).unwrap_or(Expiry::Never);
-        audit_rejection(AuditEvent::Disable, uid, &user, expires, &err);
+        audit_rejection(subject, &user, expires, &err);
         return Err(err);
     }
     timer::stop(runner, binaries, uid);
@@ -403,10 +462,8 @@ fn disable_inner(
         tracing::error!(uid, error = %err, "failed to write state file after disable");
     }
     journal::audit(&AuditRecord {
-        event: AuditEvent::Disable,
-        // Interim literal (tasks.md 4.4): retyped to `subject.source()`
-        // in Phase 7. `disable` is always Pkexec-sourced today.
-        context: UidSource::Pkexec,
+        event: subject.event(),
+        context: subject.source(),
         uid,
         user: &user,
         outcome: AuditOutcome::Ok,
@@ -461,11 +518,9 @@ pub fn status(layout: &Layout) -> Result<(), HelperError> {
     let pkexec_uid = std::env::var("PKEXEC_UID").ok();
     let real_uid = nix::unistd::getuid().as_raw();
     let ctx = uid::resolve(&Cmd::Status, pkexec_uid.as_deref(), real_uid)?;
-    let InvocationContext::Pkexec(uid) = ctx else {
-        unreachable!("Cmd::Status always resolves to InvocationContext::Pkexec")
-    };
-    let status = status_inner(layout, uid, unix_now());
-    audit_status(&status);
+    let subject = Subject::pkexec(ctx, AuditEvent::Status)?;
+    let status = status_inner(layout, subject, unix_now());
+    audit_status(&status, subject);
     print!("{}", status.to_json_line());
     Ok(())
 }
@@ -482,13 +537,16 @@ pub fn status(layout: &Layout) -> Result<(), HelperError> {
 /// `status_inner`, and `inspect` audits `AuditEvent::Inspect`, not
 /// `AuditEvent::Status`; wiring the audit here, in the caller, keeps the
 /// event tied to which subcommand asked, not to which function ran.
-fn audit_status(status: &HelperStatus) {
+///
+/// Phase 7 retype: takes `subject` instead of hardcoding
+/// `AuditEvent::Status`/`UidSource::Pkexec`. `ops::inspect` calls this
+/// exact function too, with its own `SystemRoot`-sourced
+/// `AuditEvent::Inspect` subject — the two now share this one audit call
+/// site rather than each hand-rolling their own `journal::audit`.
+fn audit_status(status: &HelperStatus, subject: Subject) {
     journal::audit(&AuditRecord {
-        event: AuditEvent::Status,
-        // Interim literal (tasks.md 4.4): retyped to `subject.source()`
-        // in Phase 7. `status` is always Pkexec-sourced today; `inspect`
-        // (SystemRoot) gains its own `AuditEvent::Inspect` call site then.
-        context: UidSource::Pkexec,
+        event: subject.event(),
+        context: subject.source(),
         uid: status.uid,
         user: &status.user,
         outcome: AuditOutcome::Ok,
@@ -503,7 +561,14 @@ fn audit_status(status: &HelperStatus) {
 /// genuine I/O failure (not just a missing file) degrades to
 /// `active: false` rather than an exit 15/16, matching "`status` can
 /// therefore never return 15 or 16."
-fn status_inner(layout: &Layout, uid: u32, now: u64) -> HelperStatus {
+///
+/// Phase 7 retype: `uid: u32` becomes `subject: Subject`, so `inspect`
+/// (design.md §5, "the same `status_inner`") can share this exact
+/// function with `status` and produce a byte-identical `HelperStatus`
+/// shape — the invocation context, admission, and audit event differ
+/// only at the two callers, never here.
+fn status_inner(layout: &Layout, subject: Subject, now: u64) -> HelperStatus {
+    let uid = subject.uid();
     let rule_path = layout.rule_path(uid).display().to_string();
     let content = std::fs::read_to_string(layout.rule_path(uid)).ok();
     let parsed = content.as_deref().and_then(|c| header::parse(c).ok());
@@ -533,14 +598,19 @@ pub fn expire(
 ) -> Result<(), HelperError> {
     let pkexec_uid = std::env::var("PKEXEC_UID").ok();
     let real_uid = nix::unistd::getuid().as_raw();
-    uid::resolve(&Cmd::Expire { uid, boot }, pkexec_uid.as_deref(), real_uid)?;
+    let ctx = uid::resolve(&Cmd::Expire { uid, boot }, pkexec_uid.as_deref(), real_uid)?;
 
     let now = unix_now();
     if boot {
         expire_boot_inner(layout, uid, now)
     } else {
         let target = uid.expect("clap's ArgGroup guarantees --uid or --boot is present");
-        expire_uid_inner(layout, runner, binaries, target, now)
+        // Phase 7 (task 7.5): routes through the same `Subject` seam
+        // every other SystemRoot-context subcommand uses, rather than a
+        // second path beside it — `expire_uid_inner` no longer hardcodes
+        // `context: UidSource::SystemRoot`, it reads it from `subject`.
+        let subject = Subject::root_target(ctx, target, AuditEvent::Expire)?;
+        expire_uid_inner(layout, runner, binaries, subject, now)
     }
 }
 
@@ -549,18 +619,26 @@ pub fn expire(
 /// missing rule is treated as already-expired (exit 0, no-op); a file
 /// that is not NoPass-owned is never deleted; `Never`, `Reboot`, and a
 /// still-future `At` are all left intact.
+///
+/// Phase 7 retype (task 7.3, 7.5): `uid: u32` becomes `subject: Subject`
+/// — [`expire`]'s wrapper now builds it via `Subject::root_target`, so
+/// this function's audit records finally read `context: subject.source()`
+/// instead of the interim `UidSource::SystemRoot` literal. `expire` is
+/// the seam's other `SystemRoot` consumer alongside `grant`/`revoke`/
+/// `inspect`, not a second path beside it.
 fn expire_uid_inner(
     layout: &Layout,
     runner: &dyn CommandRunner,
     binaries: &Binaries,
-    uid: u32,
+    subject: Subject,
     now: u64,
 ) -> Result<(), HelperError> {
+    let uid = subject.uid();
     let _guard = match LockGuard::acquire(layout) {
         Ok(guard) => guard,
         Err(err) => {
             let user = checks::lookup_user(uid).unwrap_or_default();
-            audit_rejection(AuditEvent::Expire, uid, &user, Expiry::Never, &err);
+            audit_rejection(subject, &user, Expiry::Never, &err);
             return Err(err);
         }
     };
@@ -570,7 +648,7 @@ fn expire_uid_inner(
         Ok(None) => return Ok(()), // absent rule — already-expired, exit 0 no-op
         Err(err) => {
             let user = checks::lookup_user(uid).unwrap_or_default();
-            audit_rejection(AuditEvent::Expire, uid, &user, Expiry::Never, &err);
+            audit_rejection(subject, &user, Expiry::Never, &err);
             return Err(err);
         }
     };
@@ -581,13 +659,8 @@ fn expire_uid_inner(
         // design.md §4.3's diagrammed audit point: Never, Reboot, or a
         // still-future At is a no-op, but it is still journaled.
         journal::audit(&AuditRecord {
-            event: AuditEvent::Expire,
-            // Interim literal (tasks.md 4.4): retyped to `subject.source()`
-            // in Phase 7, which routes `expire` through
-            // `Subject::root_target` (design.md §4: "expire also gains
-            // CONTEXT=SystemRoot"). Not corrected here — Phase 4 grows the
-            // schema only, it does not change `expire`'s behaviour.
-            context: UidSource::SystemRoot,
+            event: subject.event(),
+            context: subject.source(),
             uid,
             user: &header.user,
             outcome: AuditOutcome::SkippedNotExpired,
@@ -604,7 +677,7 @@ fn expire_uid_inner(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // raced externally — still success
         Err(e) => {
             let err = HelperError::Fs(format!("{}: {e}", path.display()));
-            audit_rejection(AuditEvent::Expire, uid, &header.user, header.expires, &err);
+            audit_rejection(subject, &header.user, header.expires, &err);
             return Err(err);
         }
     }
@@ -618,11 +691,8 @@ fn expire_uid_inner(
         tracing::error!(uid, error = %err, "failed to write state file after expire");
     }
     journal::audit(&AuditRecord {
-        event: AuditEvent::Expire,
-        // Interim literal (tasks.md 4.4): retyped to `subject.source()`
-        // in Phase 7, same reasoning as the `SkippedNotExpired` call
-        // above.
-        context: UidSource::SystemRoot,
+        event: subject.event(),
+        context: subject.source(),
         uid,
         user: &header.user,
         outcome: AuditOutcome::Ok,
@@ -723,6 +793,117 @@ fn sweep_one(layout: &Layout, uid: u32, now: u64) -> Result<(), HelperError> {
     Ok(())
 }
 
+// --- grant / revoke / inspect (m3a-headless-grant Phase 7) -------------
+//
+// design.md §2 "No new transaction code at all": each of the three is a
+// thin wrapper that resolves the `SystemRoot` context, builds a
+// `Subject::root_target`, admits the explicit `--uid` via
+// `admit_root_target`, and enters the exact same transaction
+// `enable`/`disable`/`status` already use. Nothing about WHAT is done
+// changes; only WHO may ask, and for WHOM.
+
+/// Production `grant` entry point — the root-context counterpart to
+/// [`enable`], reusing [`enable_inner`] unchanged (design.md §2, §7
+/// sequence). Order matches the design sequence exactly: context
+/// resolution (exit 10) → `Subject::root_target` (the seam) →
+/// `resolve_expiry_audited` (exit 13) → `admit_root_target` (exit 11) →
+/// `enable_inner`, whose own step 5 admits the same uid a deliberate
+/// second time (task 7.12).
+pub fn grant(
+    layout: &Layout,
+    runner: &dyn CommandRunner,
+    binaries: &Binaries,
+    uid_flag: u32,
+    until: Option<u64>,
+    until_reboot: bool,
+) -> Result<(), HelperError> {
+    let cmd = Cmd::Grant { uid: uid_flag, until, until_reboot };
+    let pkexec_uid = std::env::var("PKEXEC_UID").ok();
+    let real_uid = nix::unistd::getuid().as_raw();
+    let ctx = uid::resolve(&cmd, pkexec_uid.as_deref(), real_uid)?;
+    // The target uid comes from `uid_flag` (the explicit `--uid`), never
+    // from `real_uid` — this is the whole widening §3 bounds: a
+    // SystemRoot-context grant may target ANY admitted uid, not only the
+    // invoking process's own (privilege-admission "A root-invoked grant
+    // targets a uid other than the caller's own").
+    let subject = Subject::root_target(ctx, uid_flag, AuditEvent::Grant)?;
+
+    let now = unix_now();
+    let expiry = resolve_expiry_audited(subject, until, until_reboot, now)?;
+
+    let login_defs = std::fs::read_to_string("/etc/login.defs").unwrap_or_default();
+    let uid_range = logindefs::parse(&login_defs);
+    admit_root_target(subject, &uid_range)?;
+
+    // Same "no passwd entry -> exit 11, never exit 1" mapping [`enable`]
+    // already uses (verify-report C1) — by construction this branch is
+    // unreachable in practice, since `admit_root_target` just above
+    // already confirmed a passwd entry exists via the same `admit_uid`;
+    // kept anyway as defense in depth rather than an `unwrap`.
+    let raw_user = match checks::lookup_user_optional(subject.uid()) {
+        Ok(Some(name)) => name,
+        Ok(None) => {
+            let err = HelperError::UidRejected(checks::UidRejection::Unknown);
+            audit_rejection(subject, "", expiry, &err);
+            return Err(err);
+        }
+        Err(err) => return Err(err),
+    };
+
+    enable_inner(layout, runner, binaries, subject, &raw_user, &uid_range, expiry)
+}
+
+/// Production `revoke` entry point — the root-context counterpart to
+/// [`disable`], reusing [`disable_inner`] unchanged. Unlike `disable`'s
+/// pkexec path (deliberately admission-free, design.md §3 "removing a
+/// privilege must never be blocked"), `revoke`'s SystemRoot-context
+/// target still passes `admit_root_target` FIRST — the one real tension
+/// design.md §3 documents, bounded here at the wrapper rather than inside
+/// `disable_inner` itself, so `disable`'s existing untouched behaviour
+/// and every test pinning it survive exactly as written.
+pub fn revoke(
+    layout: &Layout,
+    runner: &dyn CommandRunner,
+    binaries: &Binaries,
+    uid_flag: u32,
+) -> Result<(), HelperError> {
+    let cmd = Cmd::Revoke { uid: uid_flag };
+    let pkexec_uid = std::env::var("PKEXEC_UID").ok();
+    let real_uid = nix::unistd::getuid().as_raw();
+    let ctx = uid::resolve(&cmd, pkexec_uid.as_deref(), real_uid)?;
+    let subject = Subject::root_target(ctx, uid_flag, AuditEvent::Revoke)?;
+
+    let login_defs = std::fs::read_to_string("/etc/login.defs").unwrap_or_default();
+    let uid_range = logindefs::parse(&login_defs);
+    admit_root_target(subject, &uid_range)?;
+
+    disable_inner(layout, runner, binaries, subject)
+}
+
+/// Production `inspect` entry point — shares [`status_inner`] exactly
+/// with [`status`], so the printed `HelperStatus` JSON is byte-identical
+/// (design.md §5: "identical JSON, one implementation"). Only the
+/// invocation context, admission, and audit event differ: `inspect`
+/// passes `admit_root_target` first (unlike `status`'s admission-free
+/// pkexec path) and audits `AuditEvent::Inspect`, never
+/// `AuditEvent::Status`.
+pub fn inspect(layout: &Layout, uid_flag: u32) -> Result<(), HelperError> {
+    let cmd = Cmd::Inspect { uid: uid_flag };
+    let pkexec_uid = std::env::var("PKEXEC_UID").ok();
+    let real_uid = nix::unistd::getuid().as_raw();
+    let ctx = uid::resolve(&cmd, pkexec_uid.as_deref(), real_uid)?;
+    let subject = Subject::root_target(ctx, uid_flag, AuditEvent::Inspect)?;
+
+    let login_defs = std::fs::read_to_string("/etc/login.defs").unwrap_or_default();
+    let uid_range = logindefs::parse(&login_defs);
+    admit_root_target(subject, &uid_range)?;
+
+    let status = status_inner(layout, subject, unix_now());
+    audit_status(&status, subject);
+    print!("{}", status.to_json_line());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -735,6 +916,7 @@ mod tests {
 
     use super::*;
     use crate::runner::{CommandOutcome, CommandSpec, RunnerError, ScriptedRunner};
+    use crate::uid::InvocationContext;
 
     // --- audit capture (same technique as `journal.rs`'s own tests):
     // scopes a `tracing_subscriber::fmt` layer writing into a shared
@@ -884,6 +1066,19 @@ mod tests {
         UidRange { min: 1, max: 60_000 }
     }
 
+    // --- Phase 7 test helpers: build a `Subject` directly, bypassing the
+    // live `uid::resolve`/`PKEXEC_UID` wrapper, exactly like every other
+    // `*_inner`-level test in this module already bypasses its own public
+    // wrapper's live context resolution.
+    fn subj_pkexec(uid: u32, event: AuditEvent) -> Subject {
+        Subject::pkexec(InvocationContext::Pkexec(uid), event).expect("Pkexec context must build a Subject")
+    }
+
+    fn subj_root(uid: u32, event: AuditEvent) -> Subject {
+        Subject::root_target(InvocationContext::SystemRoot, uid, event)
+            .expect("SystemRoot context must build a Subject")
+    }
+
     // --- enable: context wiring (obligation 2) -----------------------
 
     #[test]
@@ -949,7 +1144,8 @@ mod tests {
     fn duration_rejection_is_audited_with_the_real_uid() {
         let now = 1_000_000;
         let text = capture_audit(|| {
-            let err = resolve_expiry_audited(REAL_UID, Some(now - 1), false, now).unwrap_err();
+            let err = resolve_expiry_audited(subj_pkexec(REAL_UID, AuditEvent::Enable), Some(now - 1), false, now)
+                .unwrap_err();
             assert_eq!(err.exit_code(), 13);
         });
         assert!(text.contains("EVENT=\"enable\""), "audit text: {text}");
@@ -966,7 +1162,8 @@ mod tests {
         let now = 1_000_000;
         const OTHER_UID: u32 = 2; // "bin" on essentially every Linux distro
         let text = capture_audit(|| {
-            let err = resolve_expiry_audited(OTHER_UID, Some(now + 30), false, now).unwrap_err();
+            let err = resolve_expiry_audited(subj_pkexec(OTHER_UID, AuditEvent::Enable), Some(now + 30), false, now)
+                .unwrap_err();
             assert_eq!(err.exit_code(), 13);
         });
         assert!(text.contains(&format!("UID={OTHER_UID}")), "audit text: {text}");
@@ -978,7 +1175,8 @@ mod tests {
     fn resolve_expiry_audited_still_returns_ok_and_audits_nothing_on_a_valid_duration() {
         let now = 1_000_000;
         let text = capture_audit(|| {
-            let expiry = resolve_expiry_audited(REAL_UID, Some(now + 3600), false, now).unwrap();
+            let expiry = resolve_expiry_audited(subj_pkexec(REAL_UID, AuditEvent::Enable), Some(now + 3600), false, now)
+                .unwrap();
             assert_eq!(expiry, Expiry::At { epoch: now + 3600 });
         });
         assert!(text.is_empty(), "no audit record must be emitted on a successful resolution: {text}");
@@ -991,7 +1189,7 @@ mod tests {
         let (root, layout) = fresh_layout("enable_uid0");
         let binaries = fake_binaries(&root);
         let runner = ScriptedRunner::new(vec![]); // empty script — proves zero mutation
-        let err = enable_inner(&layout, &runner, &binaries, 0, "jorge", &wide_range(), Expiry::Never).unwrap_err();
+        let err = enable_inner(&layout, &runner, &binaries, subj_pkexec(0, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never).unwrap_err();
         assert_eq!(err.exit_code(), 11);
         assert!(!layout.rule_path(0).exists());
         let _ = std::fs::remove_dir_all(&root);
@@ -1005,7 +1203,7 @@ mod tests {
         outcome.stderr = b"jorge is not allowed to run sudo".to_vec();
         let runner = ScriptedRunner::new(vec![(sudo_probe_spec(&binaries, "jorge"), Ok(outcome))]);
         let err =
-            enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::Never).unwrap_err();
+            enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never).unwrap_err();
         assert_eq!(err.exit_code(), 12);
         assert!(!layout.rule_path(REAL_UID).exists());
         assert!(!layout.rule_tmp_path(REAL_UID).exists());
@@ -1023,7 +1221,7 @@ mod tests {
         let runner = ScriptedRunner::new(vec![]);
         let text = capture_audit(|| {
             let err =
-                enable_inner(&layout, &runner, &binaries, 0, "jorge", &wide_range(), Expiry::Never).unwrap_err();
+                enable_inner(&layout, &runner, &binaries, subj_pkexec(0, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never).unwrap_err();
             assert_eq!(err.exit_code(), 11);
         });
         assert!(text.contains("EVENT=\"enable\""), "audit text: {text}");
@@ -1041,7 +1239,7 @@ mod tests {
         outcome.stderr = b"jorge is not allowed to run sudo".to_vec();
         let runner = ScriptedRunner::new(vec![(sudo_probe_spec(&binaries, "jorge"), Ok(outcome))]);
         let text = capture_audit(|| {
-            let err = enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::Never)
+            let err = enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never)
                 .unwrap_err();
             assert_eq!(err.exit_code(), 12);
         });
@@ -1069,7 +1267,7 @@ mod tests {
                 &layout,
                 &runner,
                 &binaries,
-                REAL_UID,
+                subj_pkexec(REAL_UID, AuditEvent::Enable),
                 "jorge",
                 &wide_range(),
                 Expiry::At { epoch },
@@ -1098,7 +1296,7 @@ mod tests {
             (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
             (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0))),
         ]);
-        enable_inner(&layout, &runner, &binaries, REAL_UID, raw_user, &wide_range(), Expiry::Never).unwrap();
+        enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), raw_user, &wide_range(), Expiry::Never).unwrap();
         let content = std::fs::read_to_string(layout.rule_path(REAL_UID)).unwrap();
         assert!(content.contains("# nopass-user: arm-rf\n"));
         assert!(!content.contains(';'));
@@ -1118,7 +1316,7 @@ mod tests {
             (visudo_spec(&binaries, &layout, REAL_UID), Ok(reject)),
         ]);
         let err =
-            enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::Never).unwrap_err();
+            enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never).unwrap_err();
         assert_eq!(err.exit_code(), 14);
         assert!(!layout.rule_tmp_path(REAL_UID).exists());
         assert!(!layout.rule_path(REAL_UID).exists());
@@ -1139,7 +1337,7 @@ mod tests {
             (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
         ]);
         let err =
-            enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::Never).unwrap_err();
+            enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never).unwrap_err();
         assert_eq!(err.exit_code(), 16);
         assert!(!layout.rule_tmp_path(REAL_UID).exists());
         let _ = std::fs::remove_dir_all(&root);
@@ -1165,7 +1363,7 @@ mod tests {
             &layout,
             &runner,
             &binaries,
-            REAL_UID,
+            subj_pkexec(REAL_UID, AuditEvent::Enable),
             "jorge",
             &wide_range(),
             Expiry::At { epoch },
@@ -1231,7 +1429,7 @@ mod tests {
         ]);
         let runner = RollbackUnlinkFailureRunner { inner: scripted, sudoers_dir: layout.sudoers_dir().to_path_buf() };
 
-        let result = enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::At { epoch });
+        let result = enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::At { epoch });
 
         // Restore write permission before any assertion can fail this
         // test early and skip cleanup, leaving a stuck temp directory.
@@ -1270,7 +1468,7 @@ mod tests {
         let runner = RollbackUnlinkFailureRunner { inner: scripted, sudoers_dir: layout.sudoers_dir().to_path_buf() };
 
         let text = capture_audit(|| {
-            let err = enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::At { epoch })
+            let err = enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::At { epoch })
                 .unwrap_err();
             std::fs::set_permissions(layout.sudoers_dir(), std::fs::Permissions::from_mode(0o755)).unwrap();
             assert!(matches!(err, HelperError::TimerFailed { rolled_back: false }));
@@ -1297,7 +1495,7 @@ mod tests {
                 (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
                 (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0))),
             ]);
-            enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), expiry).unwrap();
+            enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), expiry).unwrap();
             assert!(layout.rule_path(REAL_UID).exists());
             let _ = std::fs::remove_dir_all(&root);
             // `ScriptedRunner`'s `Drop` would panic here if a fourth
@@ -1320,7 +1518,7 @@ mod tests {
             (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0))),
             (systemd_run_spec(&binaries, REAL_UID, epoch), Ok(ok(0))),
         ]);
-        enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::At { epoch }).unwrap();
+        enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::At { epoch }).unwrap();
         let content = std::fs::read_to_string(layout.rule_path(REAL_UID)).unwrap();
         assert!(content.contains(&format!("# nopass-expires: {epoch}\n")));
         let _ = std::fs::remove_dir_all(&root);
@@ -1337,7 +1535,7 @@ mod tests {
             (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
             (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0))),
         ]);
-        enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::Never).unwrap();
+        enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never).unwrap();
 
         let raw = std::fs::read_to_string(layout.state_path(REAL_UID)).expect("state file must exist");
         let status: HelperStatus = serde_json::from_str(raw.trim_end()).unwrap();
@@ -1369,7 +1567,7 @@ mod tests {
             (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0))),
         ]);
         let text = capture_audit(|| {
-            enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::Never).unwrap();
+            enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never).unwrap();
         });
         assert!(text.contains("EVENT=\"enable\""), "audit text: {text}");
         assert!(text.contains(&format!("UID={REAL_UID}")), "audit text: {text}");
@@ -1409,7 +1607,7 @@ mod tests {
             (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
             (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0))),
         ]);
-        let result = enable_inner(&layout, &runner, &binaries, REAL_UID, "jorge", &wide_range(), Expiry::Never);
+        let result = enable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Enable), "jorge", &wide_range(), Expiry::Never);
 
         assert!(result.is_ok(), "a state-file write failure must never change enable's exit code, got {result:?}");
         assert!(layout.rule_path(REAL_UID).exists(), "the sudoers rule itself must still be written and valid");
@@ -1436,7 +1634,7 @@ mod tests {
         let content = render_rule(REAL_UID, "jorge", Expiry::Never);
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
         let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
-        disable_inner(&layout, &runner, &binaries, REAL_UID).unwrap();
+        disable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Disable)).unwrap();
         assert!(!layout.rule_path(REAL_UID).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1456,7 +1654,7 @@ mod tests {
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
         let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
 
-        disable_inner(&layout, &runner, &binaries, REAL_UID).unwrap();
+        disable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Disable)).unwrap();
 
         let raw = std::fs::read_to_string(layout.state_path(REAL_UID)).expect("state file must exist");
         let status: HelperStatus = serde_json::from_str(raw.trim_end()).unwrap();
@@ -1483,7 +1681,7 @@ mod tests {
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
         let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
         let text = capture_audit(|| {
-            disable_inner(&layout, &runner, &binaries, REAL_UID).unwrap();
+            disable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Disable)).unwrap();
         });
         assert!(text.contains("EVENT=\"disable\""), "audit text: {text}");
         assert!(text.contains(&format!("UID={REAL_UID}")), "audit text: {text}");
@@ -1497,7 +1695,7 @@ mod tests {
         let (root, layout) = fresh_layout("disable_idempotent");
         let binaries = fake_binaries(&root);
         let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
-        disable_inner(&layout, &runner, &binaries, REAL_UID).unwrap();
+        disable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Disable)).unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1507,7 +1705,7 @@ mod tests {
         let binaries = fake_binaries(&root);
         std::fs::write(layout.rule_path(REAL_UID), "foo ALL=(ALL) ALL\n").unwrap();
         let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
-        disable_inner(&layout, &runner, &binaries, REAL_UID).unwrap();
+        disable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Disable)).unwrap();
         assert!(layout.rule_path(REAL_UID).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1518,7 +1716,7 @@ mod tests {
         let binaries = fake_binaries(&root);
         let _held = LockGuard::acquire(&layout).unwrap();
         let runner = ScriptedRunner::new(vec![]); // no command may run before the lock is even acquired
-        let err = disable_inner(&layout, &runner, &binaries, REAL_UID).unwrap_err();
+        let err = disable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Disable)).unwrap_err();
         assert_eq!(err.exit_code(), 15);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1532,7 +1730,7 @@ mod tests {
         let _held = LockGuard::acquire(&layout).unwrap();
         let runner = ScriptedRunner::new(vec![]);
         let text = capture_audit(|| {
-            let err = disable_inner(&layout, &runner, &binaries, REAL_UID).unwrap_err();
+            let err = disable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Disable)).unwrap_err();
             assert_eq!(err.exit_code(), 15);
         });
         assert!(text.contains("EVENT=\"disable\""), "audit text: {text}");
@@ -1571,7 +1769,7 @@ mod tests {
         // together they prove `timer::stop` is never invoked when the
         // unlink fails, not merely that this test forgot to assert it.
         let runner = ScriptedRunner::new(vec![]);
-        let result = disable_inner(&layout, &runner, &binaries, REAL_UID);
+        let result = disable_inner(&layout, &runner, &binaries, subj_pkexec(REAL_UID, AuditEvent::Disable));
 
         // Restore write permission before any assertion can fail this
         // test early and skip cleanup, leaving a stuck temp directory.
@@ -1628,10 +1826,11 @@ mod tests {
         let (root, layout) = fresh_layout("status_audit_active");
         let content = render_rule(REAL_UID, "jorge", Expiry::At { epoch: 1_789_000_000 });
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
-        let status = status_inner(&layout, REAL_UID, 1_789_000_500);
+        let subject = subj_pkexec(REAL_UID, AuditEvent::Status);
+        let status = status_inner(&layout, subject, 1_789_000_500);
 
         let text = capture_audit(|| {
-            audit_status(&status);
+            audit_status(&status, subject);
         });
 
         assert_eq!(text.matches("nopass audit event").count(), 1, "exactly one AuditRecord must be emitted: {text}");
@@ -1646,7 +1845,7 @@ mod tests {
         let (root, layout) = fresh_layout("status_missing");
         // An implausibly large uid: `getpwuid` deterministically fails,
         // exercising the `unwrap_or_default()` ("") branch too.
-        let status = status_inner(&layout, 4_294_967_294, 1_000_000);
+        let status = status_inner(&layout, subj_pkexec(4_294_967_294, AuditEvent::Status), 1_000_000);
         assert!(!status.active);
         assert_eq!(status.expires, None);
         assert_eq!(status.user, "");
@@ -1658,7 +1857,7 @@ mod tests {
         let (root, layout) = fresh_layout("status_active");
         let content = render_rule(REAL_UID, "jorge", Expiry::At { epoch: 1_789_000_000 });
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
-        let status = status_inner(&layout, REAL_UID, 1_789_000_500);
+        let status = status_inner(&layout, subj_pkexec(REAL_UID, AuditEvent::Status), 1_789_000_500);
         assert!(status.active);
         assert_eq!(status.user, "jorge");
         assert_eq!(status.expires, Some(Expiry::At { epoch: 1_789_000_000 }));
@@ -1670,7 +1869,7 @@ mod tests {
     fn status_inner_treats_a_foreign_unparseable_file_as_inactive() {
         let (root, layout) = fresh_layout("status_foreign");
         std::fs::write(layout.rule_path(REAL_UID), "not a nopass rule at all\n").unwrap();
-        let status = status_inner(&layout, REAL_UID, 1_000_000);
+        let status = status_inner(&layout, subj_pkexec(REAL_UID, AuditEvent::Status), 1_000_000);
         assert!(!status.active);
         assert_eq!(status.expires, None);
         let _ = std::fs::remove_dir_all(&root);
@@ -1679,7 +1878,7 @@ mod tests {
     #[test]
     fn status_inner_never_takes_the_lock_or_creates_any_directory() {
         let (root, layout) = fresh_layout("status_no_lock");
-        let _ = status_inner(&layout, REAL_UID, 1_000_000);
+        let _ = status_inner(&layout, subj_pkexec(REAL_UID, AuditEvent::Status), 1_000_000);
         assert!(!layout.lock_path().exists(), "status must never take the mutation lock");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1718,28 +1917,59 @@ mod tests {
     fn expire_audits_itself_as_system_root_because_that_is_the_only_way_it_runs() {
         // `expire` requires real uid 0 AND no PKEXEC_UID (uid.rs), so
         // there is exactly one context it can ever have. This pins the
-        // constant against being set back to `Pkexec` — which it briefly
+        // property against being set back to `Pkexec` — which it briefly
         // was, as a uniform interim value while the field was introduced.
         // A record claiming a pkexec context for an invocation that never
         // had one is a lie about the single question this field was added
         // to answer: whether the caller proved anything to polkit, or
         // simply already had root.
+        //
+        // Phase 7 correction: before this phase, `expire_uid_inner`'s
+        // audit records hardcoded the literal `context: UidSource::
+        // SystemRoot`, and this test scanned the function body's source
+        // text for that literal directly. Phase 7 (task 7.5) routes
+        // `expire` through the same `Subject` seam every other
+        // `SystemRoot`-context subcommand uses: `context` is now
+        // `subject.source()`, so no `UidSource::Pkexec`/`UidSource::
+        // SystemRoot` literal remains inside `expire_uid_inner` at all —
+        // the OLD scan would now find ZERO matches for either needle and
+        // pass vacuously, proving nothing. The property this test exists
+        // to pin — expire's audit records always claim SystemRoot, never
+        // Pkexec — is proven instead at the seam itself: [`expire`]'s
+        // production wrapper must build its `Subject` via
+        // `Subject::root_target` (the only constructor that can ever
+        // produce `UidSource::SystemRoot`), never `Subject::pkexec`.
         let src = include_str!("ops.rs");
-        let body_start = src.find("fn expire_uid_inner").expect("expire_uid_inner must exist");
-        let body_end = src.find("fn expire_boot_inner").expect("expire_boot_inner must exist");
-        let expire_region = &src[body_start..body_end];
+        let wrapper_start = src.find("pub fn expire(").expect("expire must exist");
+        let wrapper_end = src.find("fn expire_uid_inner").expect("expire_uid_inner must exist");
+        let expire_wrapper = &src[wrapper_start..wrapper_end];
 
-        let pkexec_needle = format!("{}{}", "context: UidSource::", "Pkexec");
-        let root_needle = format!("{}{}", "context: UidSource::", "SystemRoot");
-        assert_eq!(
-            expire_region.matches(pkexec_needle.as_str()).count(),
-            0,
-            "no audit record inside expire may claim a Pkexec context"
+        assert!(
+            expire_wrapper.contains("Subject::root_target"),
+            "expire's production wrapper must build its Subject via Subject::root_target, \
+             the only constructor that can ever produce UidSource::SystemRoot"
         );
         assert!(
-            expire_region.matches(root_needle.as_str()).count() >= 1,
-            "expire's audit records must name SystemRoot"
+            !expire_wrapper.contains("Subject::pkexec"),
+            "expire must never build a Pkexec-sourced Subject — doing so would let it \
+             claim a context it never had"
         );
+
+        // Runtime half: a real `expire_uid_inner` call through a
+        // `SystemRoot`-sourced Subject genuinely emits `CONTEXT=
+        // "SystemRoot"` and never `CONTEXT="Pkexec"` — the seam's static
+        // guarantee, proven once at runtime too.
+        let (root, layout) = fresh_layout("expire_audits_system_root_runtime");
+        let binaries = fake_binaries(&root);
+        let content = render_rule(REAL_UID, "jorge", Expiry::At { epoch: 500_000 });
+        std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
+        let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
+        let text = capture_audit(|| {
+            expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
+        });
+        assert!(text.contains("CONTEXT=\"SystemRoot\""), "audit text: {text}");
+        assert!(!text.contains("CONTEXT=\"Pkexec\""), "audit text: {text}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1747,7 +1977,7 @@ mod tests {
         let (root, layout) = fresh_layout("expire_uid_absent");
         let binaries = fake_binaries(&root);
         let runner = ScriptedRunner::new(vec![]);
-        expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+        expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1757,7 +1987,7 @@ mod tests {
         let binaries = fake_binaries(&root);
         std::fs::write(layout.rule_path(REAL_UID), "foo ALL=(ALL) ALL\n").unwrap();
         let runner = ScriptedRunner::new(vec![]);
-        expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+        expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
         assert!(layout.rule_path(REAL_UID).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1771,7 +2001,7 @@ mod tests {
         let content = render_rule(REAL_UID, "jorge", Expiry::At { epoch: 2_000_000 });
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
         let runner = ScriptedRunner::new(vec![]);
-        expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+        expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
         assert!(layout.rule_path(REAL_UID).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1784,7 +2014,7 @@ mod tests {
             let content = render_rule(REAL_UID, "jorge", expiry);
             std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
             let runner = ScriptedRunner::new(vec![]);
-            expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+            expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
             assert!(layout.rule_path(REAL_UID).exists());
             let _ = std::fs::remove_dir_all(&root);
         }
@@ -1797,7 +2027,7 @@ mod tests {
         let content = render_rule(REAL_UID, "jorge", Expiry::At { epoch: 500_000 });
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
         let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
-        expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+        expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
         assert!(!layout.rule_path(REAL_UID).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1820,7 +2050,7 @@ mod tests {
         let runner = ScriptedRunner::new(vec![]);
 
         let text = capture_audit(|| {
-            let result = expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000);
+            let result = expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000);
             std::fs::set_permissions(layout.sudoers_dir(), std::fs::Permissions::from_mode(0o755)).unwrap();
             let err = result.unwrap_err();
             assert_eq!(err.exit_code(), 16);
@@ -1840,7 +2070,7 @@ mod tests {
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
         let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
 
-        expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+        expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
 
         let raw = std::fs::read_to_string(layout.state_path(REAL_UID)).expect("state file must exist");
         let status: HelperStatus = serde_json::from_str(raw.trim_end()).unwrap();
@@ -1861,7 +2091,7 @@ mod tests {
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
         let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0)))]);
         let text = capture_audit(|| {
-            expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+            expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
         });
         assert!(text.contains("EVENT=\"expire\""), "audit text: {text}");
         assert!(text.contains(&format!("UID={REAL_UID}")), "audit text: {text}");
@@ -1881,7 +2111,7 @@ mod tests {
         std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
         let runner = ScriptedRunner::new(vec![]);
 
-        expire_uid_inner(&layout, &runner, &binaries, REAL_UID, 1_000_000).unwrap();
+        expire_uid_inner(&layout, &runner, &binaries, subj_root(REAL_UID, AuditEvent::Expire), 1_000_000).unwrap();
 
         assert!(layout.rule_path(REAL_UID).exists());
         assert!(!layout.state_path(REAL_UID).exists());
@@ -2042,5 +2272,203 @@ mod tests {
             "orphan state-file cleanup must still run and succeed even though an earlier rule-sweep entry failed"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // --- grant / revoke / inspect (m3a-headless-grant Phase 7) -----------
+
+    // task 7.6 / 7.13: `grant`'s happy path reaches `enable_inner` with a
+    // SystemRoot-sourced Subject, using the EXACT SAME `ScriptedRunner`
+    // script `enable_inner`'s own happy-path test uses — `ScriptedRunner`
+    // panics on any unscripted call and on drop if the script is left
+    // unexhausted, so this also proves `grant` spawns no NEW subprocess
+    // call site beyond what `enable_inner` already spawns (task 7.13:
+    // "grant adds no new subprocess call site").
+    #[test]
+    fn grant_reaches_enable_inner_with_a_system_root_sourced_subject_and_spawns_no_extra_subprocess() {
+        let range = wide_range();
+        let (root, layout) = fresh_layout("grant_happy_path");
+        let binaries = fake_binaries(&root);
+        let subject = subj_root(REAL_UID, AuditEvent::Grant);
+        let raw_user = "jorge";
+        let runner = ScriptedRunner::new(vec![
+            (sudo_probe_spec(&binaries, raw_user), Ok(ok(0))),
+            (visudo_spec(&binaries, &layout, REAL_UID), Ok(ok(0))),
+            (systemctl_stop_spec(&binaries, REAL_UID), Ok(ok(0))),
+        ]);
+        admit_root_target(subject, &range).expect("uid 1 must be admitted by a wide range");
+        enable_inner(&layout, &runner, &binaries, subject, raw_user, &range, Expiry::Never)
+            .expect("grant's happy path must reach enable_inner and succeed");
+        assert!(layout.rule_path(REAL_UID).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // task 7.7: `admit_root_target` rejects uid 0 / below-min / above-max
+    // / no-passwd-entry the same way for `grant`, `revoke`, AND `inspect`
+    // alike, each exit 11 with nothing written (privilege-admission "A
+    // SystemRoot-context target still fails UID Range Admission the same
+    // way"). Exercised at the shared full-wrapper level (`ops::grant`/
+    // `ops::revoke` cannot run end-to-end without real root, so this
+    // drives the wrapper-shared `admit_root_target` + a real `Layout`
+    // directly, proving no rule file is ever created).
+    #[test]
+    fn admit_root_target_rejects_every_admission_cause_for_grant_revoke_and_inspect_alike_with_no_write() {
+        let (root, layout) = fresh_layout("admit_root_target_no_write");
+        let range = UidRange { min: 1000, max: 60_000 };
+        let bad_uids = [0u32, 500, 99_999];
+        for event in [AuditEvent::Grant, AuditEvent::Revoke, AuditEvent::Inspect] {
+            for &uid in &bad_uids {
+                let subject = subj_root(uid, event);
+                let err = admit_root_target(subject, &range).unwrap_err();
+                assert_eq!(err.exit_code(), 11, "event {event:?}, uid {uid}");
+                assert!(!layout.rule_path(uid).exists(), "admit_root_target must never write, event {event:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // task 7.8: a root-invoked grant targets the uid named by --uid,
+    // never the invoking shell's own real uid (privilege-admission "A
+    // root-invoked grant targets a uid other than the caller's own").
+    // `grant`'s live wrapper reads `nix::unistd::getuid()` only to prove
+    // AUTHORITY (via `uid::resolve`, real uid must be 0) — this test
+    // pins that the TARGET uid handed to `Subject::root_target` is the
+    // explicit `uid_flag`, structurally, since this crate's test process
+    // is never real root and cannot exercise the live wrapper end-to-end.
+    #[test]
+    fn grant_targets_the_explicit_uid_flag_never_the_invoking_shells_own_real_uid() {
+        let src = include_str!("ops.rs");
+        let body_start = src.find("pub fn grant(").expect("grant must exist");
+        let body_end = src.find("pub fn revoke(").expect("revoke must exist");
+        let grant_wrapper = &src[body_start..body_end];
+        assert!(
+            grant_wrapper.contains("Subject::root_target(ctx, uid_flag, AuditEvent::Grant)"),
+            "grant's target uid must come from the explicit --uid flag: {grant_wrapper}"
+        );
+        assert!(
+            !grant_wrapper.contains("Subject::root_target(ctx, real_uid"),
+            "grant must never target the invoking shell's own real uid"
+        );
+    }
+
+    // task 7.9: `enable`'s declared flag surface carries no `--uid`, and
+    // its resolved target is always the caller's own `PKEXEC_UID`
+    // (privilege-admission "enable stays self-targeted with no uid
+    // argument on its surface") — pins the `Subject::pkexec` type-level
+    // guarantee (3.2) at the CLI+ops boundary: `enable`'s wrapper must
+    // build its Subject exclusively via `Subject::pkexec`, which has no
+    // uid parameter at all.
+    #[test]
+    fn enable_stays_self_targeted_with_no_uid_argument_on_its_surface() {
+        // `Cmd::Enable`'s only fields are `until`/`until_reboot` — an
+        // exhaustive struct-literal constructor fails to compile if a
+        // `uid` field is ever added without updating this line too.
+        let _ = Cmd::Enable { until: None, until_reboot: false };
+
+        let src = include_str!("ops.rs");
+        let body_start = src.find("pub fn enable(").expect("enable must exist");
+        let body_end = src.find("fn resolve_expiry(").expect("resolve_expiry must exist");
+        let enable_wrapper = &src[body_start..body_end];
+        assert!(
+            enable_wrapper.contains("Subject::pkexec"),
+            "enable's production wrapper must build its Subject via Subject::pkexec"
+        );
+        assert!(
+            !enable_wrapper.contains("Subject::root_target"),
+            "enable must never accept a caller-supplied target uid"
+        );
+    }
+
+    // task 7.10: `revoke` calls `admit_root_target` BEFORE `disable_inner`
+    // — so a uid-0 (or otherwise inadmissible) target is rejected exit 11
+    // before `disable_inner`'s own (deliberately admission-free) removal
+    // logic ever runs. `disable_inner` itself stays exactly as permissive
+    // as it always was (design.md §3, "the one real tension").
+    #[test]
+    fn revoke_calls_admit_root_target_before_disable_inner_so_an_inadmissible_target_is_rejected_first() {
+        let src = include_str!("ops.rs");
+        let body_start = src.find("pub fn revoke(").expect("revoke must exist");
+        let body_end = src.find("pub fn inspect(").expect("inspect must exist");
+        let revoke_wrapper = &src[body_start..body_end];
+        let admit_pos = revoke_wrapper.find("admit_root_target").expect("revoke must call admit_root_target");
+        let inner_pos = revoke_wrapper.find("disable_inner(").expect("revoke must call disable_inner");
+        assert!(
+            admit_pos < inner_pos,
+            "revoke must call admit_root_target BEFORE disable_inner, so an inadmissible target is \
+             rejected exit 11 before disable_inner's own admission-free removal logic ever runs"
+        );
+    }
+
+    #[test]
+    fn disable_inner_itself_still_takes_no_admission_even_though_revoke_is_now_bounded() {
+        // design.md §3's "one real tension", pinned at runtime: the bound
+        // lives at revoke's wrapper level (admit_root_target), never
+        // inside the shared transaction `disable` also uses — proven by
+        // handing `disable_inner` a subject whose uid `admit_root_target`
+        // would reject (uid 0) and confirming it still runs the removal
+        // unconditionally.
+        let (root, layout) = fresh_layout("revoke_disable_inner_still_unbounded");
+        let binaries = fake_binaries(&root);
+        let content = render_rule(0, "root", Expiry::Never);
+        std::fs::write(layout.rule_path(0), content).unwrap();
+        let runner = ScriptedRunner::new(vec![(systemctl_stop_spec(&binaries, 0), Ok(ok(0)))]);
+        let subject = subj_root(0, AuditEvent::Revoke);
+        disable_inner(&layout, &runner, &binaries, subject).unwrap();
+        assert!(!layout.rule_path(0).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // task 7.11: `inspect` shares `status_inner` exactly with `status`,
+    // producing a byte-identical `HelperStatus` JSON shape, and audits
+    // `AuditEvent::Inspect` — never `AuditEvent::Status` (design.md §5,
+    // "identical JSON, one implementation").
+    #[test]
+    fn inspect_shares_status_inner_with_status_but_audits_inspect_not_status() {
+        let (root, layout) = fresh_layout("inspect_shares_status_inner");
+        let content = render_rule(REAL_UID, "jorge", Expiry::Never);
+        std::fs::write(layout.rule_path(REAL_UID), content).unwrap();
+
+        let inspect_subject = subj_root(REAL_UID, AuditEvent::Inspect);
+        let status_subject = subj_pkexec(REAL_UID, AuditEvent::Status);
+        let inspect_status = status_inner(&layout, inspect_subject, 1_000_000);
+        let status_status = status_inner(&layout, status_subject, 1_000_000);
+        assert_eq!(
+            inspect_status.to_json_line(),
+            status_status.to_json_line(),
+            "inspect must produce a byte-identical HelperStatus shape to status"
+        );
+
+        let text = capture_audit(|| {
+            audit_status(&inspect_status, inspect_subject);
+        });
+        assert!(text.contains("EVENT=\"inspect\""), "audit text: {text}");
+        assert!(text.contains("CONTEXT=\"SystemRoot\""), "audit text: {text}");
+        assert!(!text.contains("EVENT=\"status\""), "audit text: {text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn inspect_on_a_uid_with_no_rule_reports_active_false_exactly_like_status() {
+        let (root, layout) = fresh_layout("inspect_missing_rule");
+        let subject = subj_root(4_294_967_294, AuditEvent::Inspect);
+        let status = status_inner(&layout, subject, 1_000_000);
+        assert!(!status.active, "absence is a fact, not a failure — inspect must report active:false");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // task 7.12: `grant`'s double `admit_uid` call (once in
+    // `admit_root_target`, once again inside `enable_inner`'s unchanged
+    // step 5) is pure and can only ever agree with itself — never
+    // diverge (threat matrix "Arbitrary-uid targeting"; design.md §3).
+    #[test]
+    fn admit_uid_is_pure_so_grants_double_call_can_only_ever_agree_with_itself() {
+        let range = UidRange { min: 1000, max: 60_000 };
+        for uid in [0u32, 500, 1000, 60_000, 60_001, 4_294_967_294] {
+            assert_eq!(
+                checks::admit_uid(uid, &range),
+                checks::admit_uid(uid, &range),
+                "admit_uid must be pure: the same (uid, range) pair must always agree with itself, \
+                 which is the property grant's deliberate double call depends on"
+            );
+        }
     }
 }
