@@ -35,11 +35,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_channel::{Receiver, Sender};
 
+use crate::config::Config;
+use crate::consent::ConsentState;
+use crate::duration::GrantDuration;
 use crate::event::Event;
 use crate::format;
 use crate::invoke::{pkexec_spec, ActionGate, Locale, Ticket};
 use crate::notifications::{action_notification, expiry_notification, Category, NotifyPort};
-use crate::outcome::{self, Action, OutcomeKind};
+use crate::outcome::{self, Action, EnableRequest, OutcomeKind};
 use crate::preflight::Mode;
 use crate::probe::{self, Probe, ProbeCache, ProbeError};
 use crate::reconcile::{self, TrayState, Trigger};
@@ -263,7 +266,7 @@ impl App {
     /// duration of this function call (design.md §4.4).
     fn spawn_action(&self, action: Action, ticket: Ticket) {
         let runner = Arc::clone(&self.runner);
-        let spec = pkexec_spec(&self.pkexec, Path::new(nopass_core::paths::HELPER_PATH), action, &self.locale);
+        let spec = pkexec_spec(&self.pkexec, Path::new(nopass_core::paths::HELPER_PATH), &action, &self.locale);
         let tx = self.events_tx.clone();
         std::thread::spawn(move || {
             let result = runner.run(&spec);
@@ -332,7 +335,24 @@ impl App {
             return;
         };
         let action = match &self.current_state {
-            TrayState::Inactive => Action::Enable { until: now + 3600 },
+            // design.md §3 D3: `Action::Enable` cannot be built without a
+            // `Granted`, which only `ConsentState::grant`/`confirm` ever
+            // produce. `App` does not yet own a `ConsentState` — routing
+            // every activation path through `grant()` (replacing this
+            // always-acknowledged local state with the real one, sourced
+            // from `Config`/menu selection) is task 8.1's job, not this
+            // phase's. This preserves M2's exact observable behaviour
+            // (`now + 3600`, i.e. `GrantDuration::Hour1`) while adapting
+            // to the new, unconstructible-without-consent type.
+            TrayState::Inactive => {
+                let consent = ConsentState::from_config(&Config {
+                    default_duration: GrantDuration::Hour1,
+                    warning_acknowledged: true,
+                });
+                let granted =
+                    consent.grant().expect("a locally-acknowledged ConsentState always yields Granted");
+                Action::Enable(EnableRequest::new(GrantDuration::Hour1, now, granted))
+            }
             TrayState::Active { .. } => Action::Disable,
             // `toggle_label(Unknown) == None` (design.md D6): no producer
             // of `Event::ToggleRequested` can reach this arm while the
@@ -472,6 +492,7 @@ pub async fn run(mut app: App) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consent::granted_for_test;
     use crate::outcome::classify;
     use crate::runner::{CommandSpec, ScriptedRunner};
     use std::sync::Mutex;
@@ -551,15 +572,33 @@ mod tests {
         ))
     }
 
+    /// The subset of a just-handled [`Event`] these tests need to assert
+    /// on. `Event` is deliberately not `Clone` (design.md §3 D3:
+    /// `ActionFinished` carries a `Granted`-backed `Action` that must not
+    /// be duplicated), so `recv_and_handle` inspects the event by
+    /// reference before moving it into `app.handle` and returns this
+    /// small summary instead of the event itself.
+    #[derive(Debug)]
+    enum HandledEvent {
+        WatchLost,
+        ActionFinishedEnableOk,
+        Other,
+    }
+
     /// Receives the next event within `timeout` and feeds it through
     /// `app.handle`, exactly as `run`'s own loop would — background
     /// producers (`spawn_probe`/`spawn_action`) only ever report into the
     /// channel; nothing except `handle` is allowed to react to them.
-    fn recv_and_handle(app: &mut App, timeout: Duration) -> Option<Event> {
+    fn recv_and_handle(app: &mut App, timeout: Duration) -> Option<HandledEvent> {
         let rx = app.events_rx.clone();
         let event = recv_within(&rx, timeout)?;
-        app.handle(event.clone());
-        Some(event)
+        let summary = match &event {
+            Event::WatchLost => HandledEvent::WatchLost,
+            Event::ActionFinished(Action::Enable(_), Ok(_)) => HandledEvent::ActionFinishedEnableOk,
+            _ => HandledEvent::Other,
+        };
+        app.handle(event);
+        Some(summary)
     }
 
     const SHORT: Duration = Duration::from_millis(500);
@@ -599,7 +638,7 @@ mod tests {
 
         app.reconcile(Trigger::MenuOpened, now);
 
-        assert_eq!(recv_within(&rx, NONE_EXPECTED), None, "a fresh cache must not trigger a probe on MenuOpened");
+        assert!(recv_within(&rx, NONE_EXPECTED).is_none(), "a fresh cache must not trigger a probe on MenuOpened");
     }
 
     #[test]
@@ -649,7 +688,7 @@ mod tests {
         app.handle_toggle(now());
 
         match recv_and_handle(&mut app, SHORT) {
-            Some(Event::ActionFinished(Action::Enable { .. }, Ok(_))) => {}
+            Some(HandledEvent::ActionFinishedEnableOk) => {}
             other => panic!("expected the enable action to finish, got {other:?}"),
         }
         // Processing `ActionFinished` above must itself have forced the
@@ -658,7 +697,7 @@ mod tests {
             Some(Event::ProbeFinished(_)) => {}
             other => panic!("ActionCompleted must always force a probe, got {other:?}"),
         }
-        assert_eq!(recv_within(&rx, NONE_EXPECTED), None, "a second in-flight toggle must never spawn a second action");
+        assert!(recv_within(&rx, NONE_EXPECTED).is_none(), "a second in-flight toggle must never spawn a second action");
 
         let posts = notify.posts.lock().unwrap();
         assert!(posts.iter().any(|(c, s, _)| *c == Category::Action && s == "Passwordless sudo enabled"));
@@ -695,7 +734,7 @@ mod tests {
         let notify = Arc::new(RecordingNotify::default());
         let mut app = test_app(runner, tray, notify.clone(), Mode::Full);
 
-        let kind = classify(Action::Enable { until: 1 }, Some(17), true);
+        let kind = classify(Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1, granted_for_test())), Some(17), true);
         assert_eq!(kind, OutcomeKind::TimerUnscheduled);
         app.pending_escalation = Some(kind);
         app.handle_probe_finished(Ok(Probe::Passwordless), now());
@@ -1021,7 +1060,7 @@ mod tests {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             assert!(remaining > Duration::ZERO, "timed out waiting for Event::WatchLost");
             match recv_and_handle(app, remaining) {
-                Some(Event::WatchLost) => return,
+                Some(HandledEvent::WatchLost) => return,
                 Some(_) => continue,
                 None => panic!("timed out waiting for Event::WatchLost"),
             }

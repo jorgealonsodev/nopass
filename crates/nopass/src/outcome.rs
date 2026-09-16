@@ -12,16 +12,85 @@
 //! module forgets to add, therefore fails to compile here rather than
 //! silently reusing another code's message.
 
+use nopass_core::expiry::Expiry;
+
+use crate::consent::Granted;
+use crate::duration::GrantDuration;
 use crate::probe::Probe;
 
-/// What the tray asked the helper to do. `Enable`'s `until` is the epoch
-/// second the helper was told to expire the grant at — carried through
-/// to [`OutcomeKind::Granted`] for later display (design.md §2 `outcome`,
-/// §4.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the tray asked the helper to do (design.md §2 `outcome`, §4.3,
+/// §3 D3). `Enable`'s only constructor is [`EnableRequest::new`], which
+/// takes a [`Granted`] — a value nothing outside `consent.rs` can name —
+/// so `Action::Enable` is unconstructible without going through
+/// [`crate::consent::ConsentState::grant`] or
+/// [`crate::consent::ConsentState::confirm`] first (threat matrix
+/// "Consent bypass"). `Action` therefore cannot derive `Clone`/`Copy`:
+/// one `Granted` buys exactly one invocation.
+#[derive(Debug)]
 pub enum Action {
-    Enable { until: u64 },
+    Enable(EnableRequest),
     Disable,
+}
+
+/// The privileged detail behind [`Action::Enable`]: which duration was
+/// requested, when the request was made (`at`, an epoch second), and the
+/// [`Granted`] proof that the first-activation warning was accepted.
+/// Every field is private — [`EnableRequest::new`] is the only way to
+/// build one, and it demands a `Granted` argument (design.md §3 D3).
+#[derive(Debug)]
+pub struct EnableRequest {
+    duration: GrantDuration,
+    at: u64,
+    #[allow(dead_code)] // held only as proof-of-consent; never inspected
+    granted: Granted,
+}
+
+impl EnableRequest {
+    /// The ONLY constructor. `granted` cannot be fabricated outside
+    /// `consent.rs`, so calling this at all is itself proof that consent
+    /// was recorded before this value could ever exist.
+    pub fn new(duration: GrantDuration, at: u64, granted: Granted) -> Self {
+        EnableRequest { duration, at, granted }
+    }
+
+    /// The exact argv `duration` renders after `enable`, evaluated at
+    /// `at` — the single XOR site `duration::args` already owns (design
+    /// Open Questions; threat matrix "External command composition").
+    /// Crate-internal: `invoke::pkexec_spec` is the only consumer.
+    pub(crate) fn argv(&self) -> Vec<String> {
+        self.duration.args(self.at)
+    }
+
+    /// Best-effort epoch second for [`OutcomeKind::Granted`]'s display
+    /// (§5, §5.1). `Expiry::At` durations have a single epoch to report;
+    /// `Expiry::Reboot`/`Expiry::Never` do not, and the full
+    /// end-to-end composition — including how those two render — is
+    /// finished by Phase 8 (design.md §4 file-changes table, task 8.8).
+    fn until(&self) -> u64 {
+        match self.duration.expiry(self.at) {
+            Expiry::At { epoch } => epoch,
+            Expiry::Reboot | Expiry::Never => self.at,
+        }
+    }
+}
+
+/// Authority-free description of an [`Action`], for the outcome table and
+/// any in-flight record that must outlive the single-use [`Granted`]
+/// proof (design.md §3 D3): `classify`/`handle_action_finished` can take
+/// this instead of `Action` itself, so `Granted` never needs `Clone`.
+#[derive(Debug, Clone, Copy)]
+pub enum ActionKind {
+    Enable { expiry: Expiry },
+    Disable,
+}
+
+impl Action {
+    pub fn kind(&self) -> ActionKind {
+        match self {
+            Action::Enable(req) => ActionKind::Enable { expiry: req.duration.expiry(req.at) },
+            Action::Disable => ActionKind::Disable,
+        }
+    }
 }
 
 /// One user-facing outcome. One variant per §5 table row, plus
@@ -276,7 +345,7 @@ pub fn classify(action: Action, status: Option<i32>, helper_present: bool) -> Ou
     };
     match DocumentedCode::from_raw(code) {
         DocumentedCode::Zero => match action {
-            Action::Enable { until } => OutcomeKind::Granted { until },
+            Action::Enable(req) => OutcomeKind::Granted { until: req.until() },
             Action::Disable => OutcomeKind::Revoked,
         },
         DocumentedCode::One => OutcomeKind::InternalError,
@@ -341,10 +410,21 @@ pub fn escalate(prev: OutcomeKind, probe: Probe) -> Option<OutcomeKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consent::granted_for_test;
+
+    /// Builds an `Action::Enable` for these tests via the real
+    /// `EnableRequest::new(GrantDuration, at, Granted)` constructor — the
+    /// only one that exists (design.md §3 D3) — always using
+    /// `GrantDuration::Hour1`, whose `expiry(at) == At { epoch: at + 3600
+    /// }`, so callers can still reason about the resulting `until` in
+    /// terms of `at`.
+    fn enable(at: u64) -> Action {
+        Action::Enable(EnableRequest::new(GrantDuration::Hour1, at, granted_for_test()))
+    }
 
     fn all_documented_outcomes() -> Vec<OutcomeKind> {
         vec![
-            classify(Action::Enable { until: 1_700_000_000 }, Some(0), true),
+            classify(enable(1_700_000_000), Some(0), true),
             classify(Action::Disable, Some(0), true),
             classify(Action::Disable, Some(1), true),
             classify(Action::Disable, Some(2), true),
@@ -367,7 +447,7 @@ mod tests {
 
     #[test]
     fn exit_zero_enable_grants_and_carries_the_until_epoch() {
-        assert_eq!(classify(Action::Enable { until: 42 }, Some(0), true), OutcomeKind::Granted { until: 42 });
+        assert_eq!(classify(enable(42), Some(0), true), OutcomeKind::Granted { until: 42 + 3_600 });
     }
 
     #[test]
@@ -443,7 +523,7 @@ mod tests {
     #[test]
     fn a_missing_status_is_interrupted_regardless_of_action() {
         assert_eq!(classify(Action::Disable, None, true), OutcomeKind::Interrupted);
-        assert_eq!(classify(Action::Enable { until: 1 }, None, false), OutcomeKind::Interrupted);
+        assert_eq!(classify(enable(1), None, false), OutcomeKind::Interrupted);
     }
 
     #[test]

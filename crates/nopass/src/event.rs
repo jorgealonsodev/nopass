@@ -25,7 +25,11 @@ use crate::tray::TrayEvent;
 pub const TICK_INTERVAL_SECS: u64 = 60;
 
 /// What the reactor's adapters hand to `app::run` (design.md §2 `event`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Deliberately not `Clone`/`PartialEq`/`Eq`: `ActionFinished` carries an
+/// [`Action`], which (design.md §3 D3) holds a `Granted` proof-of-consent
+/// that cannot be duplicated — one `Granted` buys exactly one invocation.
+#[derive(Debug)]
 pub enum Event {
     /// `watch::Watch` observed a debounced change under `<uid>.state`
     /// (design.md D8).

@@ -187,13 +187,16 @@ impl<W: Write + Send> NotifyPort for FreedesktopNotifier<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::outcome::{classify, Action};
+    use crate::consent::granted_for_test;
+    use crate::duration::GrantDuration;
+    use crate::outcome::{classify, Action, EnableRequest};
 
     // ---- action_notification / expiry_notification / already_running_notification (Lane A) ----
 
     #[test]
     fn granted_appends_the_countdown_to_the_constant_body() {
-        let kind = classify(Action::Enable { until: 1_700_000_000 }, Some(0), true);
+        let action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000, granted_for_test()));
+        let kind = classify(action, Some(0), true);
         let (summary, body) = action_notification(kind, "42 min");
         assert_eq!(summary, "Passwordless sudo enabled");
         assert!(body.contains("42 min"), "body must carry the countdown: {body:?}");

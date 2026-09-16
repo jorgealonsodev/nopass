@@ -156,37 +156,37 @@ working state.
 *(Design §3 D3; Spec: activation-consent (all))* — depends on Phases 1, 2. **MUST complete before
 Phase 6** — the invariant is a type, not a per-caller check, and only exists once this lands.
 
-- [ ] 3.1 Create `crates/nopass/src/consent.rs` — `pub struct Granted(())` (no `Default`/`new`/
+- [x] 3.1 Create `crates/nopass/src/consent.rs` — `pub struct Granted(())` (no `Default`/`new`/
       `Clone`/`Copy`/`From`/public field — unconstructible outside this module); `pub struct
       ConsentState { acknowledged: bool, pending: Option<GrantDuration> }`; `from_config`, `grant`,
       `arm`, `confirm`, `cancel`, `branch`.
-- [ ] 3.2 Modify `crates/nopass/src/outcome.rs` — `Action::Enable` loses its public constructor;
+- [x] 3.2 Modify `crates/nopass/src/outcome.rs` — `Action::Enable` loses its public constructor;
       `pub struct EnableRequest { duration, at, granted: Granted }` with private fields and
       `EnableRequest::new(d, now, g: Granted)` as the only constructor; `Action::kind() ->
       ActionKind`.
-- [ ] 3.3 RED (Lane A): a module-doc note on `consent.rs` records `Granted(())` as unconstructible
+- [x] 3.3 RED (Lane A): a module-doc note on `consent.rs` records `Granted(())` as unconstructible
       outside the module (asserted by review + the private field, no `trybuild` dependency, matching
       M2's declined precedent). GREEN: none — pins a compile-time property.
-- [ ] 3.4 RED (Lane A) `consent.rs`: `ConsentState::grant()` returns `None` while unacknowledged;
+- [x] 3.4 RED (Lane A) `consent.rs`: `ConsentState::grant()` returns `None` while unacknowledged;
       `arm(d)` records a pending duration with **zero** `ScriptedRunner` invocations
       (activation-consent "A menu-triggered activation with no recorded consent dispatches
       nothing"). GREEN: implement `grant`, `arm`.
-- [ ] 3.5 RED (Lane A) `consent.rs`: every activation-raising `Event` (menu toggle, SNI
+- [x] 3.5 RED (Lane A) `consent.rs`: every activation-raising `Event` (menu toggle, SNI
       left-click/keyboard, single-instance nudge), fed to an unacknowledged `ConsentState`, produces
       zero invocations — table-driven over every known caller (activation-consent "A non-menu
       activation path...", "...activation nudge never itself dispatches an enable"; threat matrix
       "Consent bypass"). GREEN: none beyond 3.1–3.2 — the type makes the alternative a compile error;
       this test pins the guarantee per caller.
-- [ ] 3.6 RED (Lane A) `consent.rs`: `confirm(persist: false)` returns `Some((d, Granted))` exactly
+- [x] 3.6 RED (Lane A) `consent.rs`: `confirm(persist: false)` returns `Some((d, Granted))` exactly
       once per `arm`; `cancel()` clears `pending` with no state change (activation-consent "Confirming
       the branch grants exactly once", "Cancelling the branch grants nothing"). GREEN: implement
       `confirm`, `cancel`.
-- [ ] 3.7 RED (Lane A) `consent.rs`: `confirm(persist: true)` sets `acknowledged = true` only after a
+- [x] 3.7 RED (Lane A) `consent.rs`: `confirm(persist: true)` sets `acknowledged = true` only after a
       successful config write; a failing write (fake config port) leaves `acknowledged` false and the
       next `grant()` still returns `None` (activation-consent "Don't-Warn-Again Persists Consent", "A
       Failed Consent Write Re-Warns Rather Than Silently Granting"). GREEN: implement the
       write-then-acknowledge sequencing.
-- [ ] 3.8 RED (Lane A) `consent.rs`: `branch()` returns `None` once acknowledged, `Some(ConsentBranch)`
+- [x] 3.8 RED (Lane A) `consent.rs`: `branch()` returns `None` once acknowledged, `Some(ConsentBranch)`
       while pending. GREEN: implement `branch` — consumed by Phase 6's menu render.
 
 ---

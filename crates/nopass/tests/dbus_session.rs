@@ -40,7 +40,10 @@ use zbus::zvariant::OwnedValue;
 use nopass::format::ToolTip as FormatToolTip;
 use nopass::instance::{self, AppInterface, Acquisition, APPLICATION_INTERFACE, OBJECT_PATH, SERVICE_NAME};
 use nopass::notifications::{action_notification, already_running_notification, expiry_notification, Category, FreedesktopNotifier, NotifyPort};
-use nopass::outcome::{classify, Action, OutcomeKind};
+use nopass::config::Config;
+use nopass::consent::ConsentState;
+use nopass::duration::GrantDuration;
+use nopass::outcome::{classify, Action, EnableRequest, OutcomeKind};
 use nopass::reconcile::TrayState;
 use nopass::tray::{KsniTray, TrayEvent, TrayPort, ViewModel};
 
@@ -518,7 +521,13 @@ fn successful_action_and_detected_expiry_each_produce_a_delivered_notification()
         let (_daemon_conn, calls) = spawn_fake_notifications().await;
         let notifier = FreedesktopNotifier::new();
 
-        let granted = classify(Action::Enable { until: 1_700_003_600 }, Some(0), true);
+        let consent = ConsentState::from_config(&Config {
+            default_duration: GrantDuration::Hour1,
+            warning_acknowledged: true,
+        });
+        let granted_token = consent.grant().expect("an acknowledged ConsentState always yields Granted");
+        let enable_action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000, granted_token));
+        let granted = classify(enable_action, Some(0), true);
         let (summary, body) = action_notification(granted, "1 hour");
         notifier.post(Category::Action, &summary, &body);
 

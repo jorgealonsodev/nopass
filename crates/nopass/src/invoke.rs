@@ -72,13 +72,12 @@ impl Locale {
 /// `pkexec` and `helper` are both absolute paths resolved by the caller
 /// (design.md's ordered-absolute-candidate discipline); this function
 /// never resolves anything itself and never falls back to a bare name.
-pub fn pkexec_spec(pkexec: &Path, helper: &Path, action: Action, locale: &Locale) -> CommandSpec {
+pub fn pkexec_spec(pkexec: &Path, helper: &Path, action: &Action, locale: &Locale) -> CommandSpec {
     let mut args = vec![helper.display().to_string()];
     match action {
-        Action::Enable { until } => {
+        Action::Enable(req) => {
             args.push("enable".to_string());
-            args.push("--until".to_string());
-            args.push(until.to_string());
+            args.extend(req.argv());
         }
         Action::Disable => args.push("disable".to_string()),
     }
@@ -132,6 +131,9 @@ impl Drop for Ticket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consent::granted_for_test;
+    use crate::duration::GrantDuration;
+    use crate::outcome::EnableRequest;
     use crate::probe;
     use crate::runner::{CommandRunner as _, RunnerError, SpawnOutcome, SystemRunner};
     use std::path::PathBuf;
@@ -142,12 +144,23 @@ mod tests {
         Locale { lang: Some(lang.to_string()), lc_all: None, lc_messages: None }
     }
 
+    /// Builds an `Action::Enable` via the real `EnableRequest::new`
+    /// constructor (design.md §3 D3) — `GrantDuration::Hour1` at `at`
+    /// resolves to `--until <at + 3600>`.
+    fn enable(at: u64) -> Action {
+        Action::Enable(EnableRequest::new(GrantDuration::Hour1, at, granted_for_test()))
+    }
+
     // ---- 5.2: exact pkexec argv, env pass-through list ----
 
     #[test]
     fn pkexec_spec_builds_the_exact_documented_enable_argv() {
-        let spec =
-            pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), Action::Enable { until: 1_700_003_600 }, &locale("en_US.UTF-8"));
+        let spec = pkexec_spec(
+            &PathBuf::from("/usr/bin/pkexec"),
+            &PathBuf::from(HELPER_PATH),
+            &enable(1_700_000_000),
+            &locale("en_US.UTF-8"),
+        );
         assert_eq!(spec.program, PathBuf::from("/usr/bin/pkexec"));
         assert_eq!(
             spec.args,
@@ -157,14 +170,14 @@ mod tests {
 
     #[test]
     fn pkexec_spec_builds_the_exact_documented_disable_argv() {
-        let spec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), Action::Disable, &locale("en_US.UTF-8"));
+        let spec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), &Action::Disable, &locale("en_US.UTF-8"));
         assert_eq!(spec.program, PathBuf::from("/usr/bin/pkexec"));
         assert_eq!(spec.args, vec![HELPER_PATH.to_string(), "disable".to_string()]);
     }
 
     #[test]
     fn pkexec_spec_never_adds_user_or_shell_flags() {
-        let spec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), Action::Disable, &Locale::default());
+        let spec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), &Action::Disable, &Locale::default());
         assert!(!spec.args.iter().any(|a| a == "--user"), "must never pass --user: {:?}", spec.args);
         assert!(!spec.args.iter().any(|a| a == "--disable-internal-agent"), "must never pass --disable-internal-agent");
         assert!(spec.args.iter().all(|a| a != "sh" && a != "-c"), "must never wrap in a shell: {:?}", spec.args);
@@ -177,7 +190,7 @@ mod tests {
             lc_all: Some("es_AR.UTF-8".to_string()),
             lc_messages: Some("es_AR.UTF-8".to_string()),
         };
-        let spec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), Action::Disable, &full);
+        let spec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), &Action::Disable, &full);
         assert_eq!(
             spec.env,
             vec![
@@ -190,7 +203,7 @@ mod tests {
 
     #[test]
     fn env_pass_through_omits_variables_absent_from_the_locale() {
-        let spec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), Action::Disable, &Locale::default());
+        let spec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), &Action::Disable, &Locale::default());
         assert!(spec.env.is_empty(), "no LANG/LC_ALL/LC_MESSAGES present ⇒ no env pairs at all: {:?}", spec.env);
     }
 
@@ -231,14 +244,14 @@ mod tests {
 
     #[test]
     fn pkexec_and_sudo_specs_are_command_spec_only_never_a_shell_string() {
-        let pkexec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), Action::Enable { until: 1 }, &locale("C"));
+        let pkexec = pkexec_spec(&PathBuf::from("/usr/bin/pkexec"), &PathBuf::from(HELPER_PATH), &enable(0), &locale("C"));
         let sudo = probe::spec(&PathBuf::from("/usr/bin/sudo"));
 
         assert_eq!(
             pkexec,
             CommandSpec {
                 program: PathBuf::from("/usr/bin/pkexec"),
-                args: vec![HELPER_PATH.to_string(), "enable".to_string(), "--until".to_string(), "1".to_string()],
+                args: vec![HELPER_PATH.to_string(), "enable".to_string(), "--until".to_string(), "3600".to_string()],
                 env: vec![("LANG".to_string(), "C".to_string())],
             }
         );
