@@ -72,9 +72,9 @@ pub fn init() {
 /// emits it on every successful call, closing the gap where it used to
 /// be emitted from nowhere. `Grant`, `Revoke`, and `Inspect` are the
 /// three headless root-context subcommands `m3a-headless-grant` adds
-/// (design.md §1); their own `Cmd` variants and `journal::audit` call
-/// sites land in a later phase of that change, so `audit_event_for`
-/// cannot yet reach them.
+/// (design.md §1); Phase 5 gave them their `Cmd` variants and Phase 7
+/// their `journal::audit` call sites, so `audit_event_for` reaches all
+/// seven today — see the totality test at the bottom of this file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEvent {
     Enable,
