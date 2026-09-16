@@ -325,34 +325,34 @@ seam)* — depends on Phases 3, 4, 6.
 *(Design §0 G1 resolved, §8; Spec: helper-observability (root-only scenarios))* — depends on
 Phase 4 (`context` field) and Phase 7 (wrappers emit it).
 
-- [ ] 8.1 Create `tests/containers/Containerfile.journald` — plain `debian:12-slim`,
+- [x] 8.1 Create `tests/containers/Containerfile.journald` — plain `debian:12-slim`,
       `apt-get install -y --no-install-recommends systemd python3`, `mkdir -p
       /run/systemd/journal /var/log/journal`, entrypoint starts
       `/usr/lib/systemd/systemd-journald &`, `sleep 2`, then runs `cargo test --workspace` with
       `NOPASS_JOURNAL_TESTS=1`. **Distinct from `Containerfile.debian`/`.fedora`, which MUST
       keep having no systemd** (G2 — their absence is load-bearing for the real exit-17 rollback
       test).
-- [ ] 8.2 Create `scripts/run-lane-journal.sh` — same runtime-detection pattern as
+- [x] 8.2 Create `scripts/run-lane-journal.sh` — same runtime-detection pattern as
       `run-lane-root.sh` (docker first, podman fallback), builds and runs
       `Containerfile.journald` with `NOPASS_JOURNAL_TESTS=1`; the script MUST NOT treat journald's
       non-fatal `Failed to join audit multicast group` stderr line as failure — assert on exit
       code only, never on stderr content.
-- [ ] 8.3 Create `crates/nopass-helper/tests/root_journal.rs`, gated
+- [x] 8.3 Create `crates/nopass-helper/tests/root_journal.rs`, gated
       `NOPASS_JOURNAL_TESTS=1` — `successful_enable_is_journaled`: run a real `enable`
       transaction, `journalctl -t nopass-helper` reads back `SYSLOG_IDENTIFIER=nopass-helper`,
       uid, and resulting expiry (helper-observability "Successful enable is journaled").
-- [ ] 8.4 RED (Lane R-J) `root_journal.rs`: `root_invoked_grant_is_journaled_with_system_root_
+- [x] 8.4 RED (Lane R-J) `root_journal.rs`: `root_invoked_grant_is_journaled_with_system_root_
       context_and_explicit_target`: run `grant --uid 1000`, then
       `journalctl NOPASS_CONTEXT=SystemRoot` matches it and returns `NOPASS_UID=1000` in `-o
       json` (helper-observability "A root-invoked grant is journaled with the SystemRoot context
       and its explicit target"). GREEN: satisfied by Phase 7's wiring; this test proves it against
       a real journal, not our own writer.
-- [ ] 8.5 **Negative control** — RED (Lane R-J) `root_journal.rs`:
+- [x] 8.5 **Negative control** — RED (Lane R-J) `root_journal.rs`:
       `a_context_value_never_written_matches_nothing`: `journalctl NOPASS_CONTEXT=Pkexec` after
       only `SystemRoot`-context invocations have run returns zero matches — without this, 8.4
       could pass on a query that matches everything. GREEN: none — this test's pass/fail *is* the
       gate.
-- [ ] 8.6 RED (Lane R-J) `root_journal.rs`: `revoke --uid 1000` and `inspect --uid 1000` each
+- [x] 8.6 RED (Lane R-J) `root_journal.rs`: `revoke --uid 1000` and `inspect --uid 1000` each
       produce their own record naming their own outcome, `SystemRoot` context, and target uid
       1000 (helper-observability "Revoke and inspect are journaled the same way"). GREEN:
       satisfied by 7.10–7.11.

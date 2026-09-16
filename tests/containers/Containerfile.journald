@@ -1,0 +1,76 @@
+# Journald read-back lane (design.md §0 G1, §8 "Testing strategy"; task
+# 8.1). Builds a disposable image where a STANDALONE `systemd-journald`
+# runs with NO PID 1 systemd, no `--privileged`, and no cgroup mount — G1,
+# proven and documented in design.md §0. This is a FOURTH image,
+# deliberately distinct from `Containerfile.debian`/`.fedora`, which keep
+# no systemd at all (G2): that absence is load-bearing for the real
+# exit-17 rollback test in `root_system.rs`, and this image must not
+# disturb it.
+#
+# The entrypoint starts journald in the background, waits for it to come
+# up, then runs exactly the `root_journal` test binary
+# (NOPASS_JOURNAL_TESTS=1) — NOT `cargo test --workspace`, for the same
+# reason `scripts/run-lane-root.sh` scopes to `--test root_system`
+# instead of the whole workspace (see that script's own comment): running
+# the full workspace as real root also runs
+# `crates/nopass/tests/state_tempdir.rs`'s
+# `an_unreadable_directory_reads_as_faulted_io`, which is ungated and
+# fails under root because permission checks are bypassed for uid 0. That
+# failure is unrelated to this lane's own evidence goal, so scoping to
+# the one test binary this lane exists for avoids it exactly as the root
+# lane already does.
+#
+# Non-fatal `Failed to join audit multicast group … Ignoring` on
+# journald's stderr is expected (design.md §0) and must never be treated
+# as failure — only the exit code counts.
+#
+# Build and run via `scripts/run-lane-journal.sh`; see
+# tests/containers/README.md for the exact invocation.
+
+FROM debian:12-slim
+
+# `systemd` for a real, standalone `systemd-journald` (G1). `python3` per
+# task 8.1's specified package set. `sudo`/`passwd` mirror
+# `Containerfile.debian`: `root_journal.rs` runs real `grant`/`revoke`/
+# `inspect`/`enable` transactions against real disposable users, which
+# need a real `visudo`/`/etc/sudoers.d` and real `useradd`/`userdel`.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd \
+        python3 \
+        sudo \
+        passwd \
+        ca-certificates \
+        curl \
+        build-essential \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /run/systemd/journal /var/log/journal
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# `--default-toolchain none`: the pinned toolchain comes from
+# rust-toolchain.toml once the workspace is copied in below — see
+# Containerfile.debian's identical comment.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain none --profile minimal
+
+WORKDIR /workspace
+COPY . .
+
+RUN rustup show && cargo fetch --locked
+
+# Baked-in startup sequence (task 8.1): start journald, give it a moment
+# to come up, then run exactly the journald read-back suite.
+RUN printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'set -euo pipefail' \
+        '/usr/lib/systemd/systemd-journald &' \
+        'sleep 2' \
+        'exec cargo test -p nopass-helper --test root_journal' \
+        > /entrypoint.sh \
+    && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
