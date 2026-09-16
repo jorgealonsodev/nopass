@@ -391,7 +391,7 @@ Phase 4 (`context` field) and Phase 7 (wrappers emit it).
 *(Design §8 "The docs/ assertions"; Spec: headless-operation "Operator Documentation Names Only
 the Supported Headless Commands")* — depends on Phase 5 (subcommands must exist to document).
 
-- [ ] 10.1 Create `docs/headless.md` — Spanish register (matches `docs/PRD_NoPass_Linux.md`,
+- [x] 10.1 Create `docs/headless.md` — Spanish register (matches `docs/PRD_NoPass_Linux.md`,
       read-only reference for the existing register), documenting `grant`/`revoke`/`inspect` with
       their `--uid` requirement as the supported headless procedure; states the desktop
       assumption `enable`/`disable`/`status` make (tray, interactive polkit agent,
@@ -401,23 +401,23 @@ the Supported Headless Commands")* — depends on Phase 5 (subcommands must exis
       allows an unnamed alternative cannot be written as a test, and whoever implements it will
       pick the weaker reading. One literal, uppercase, pinned here so the guard and the document
       cannot drift apart.
-- [ ] 10.2 RED (Lane A): create `crates/nopass-helper/tests/docs_headless.rs` —
+- [x] 10.2 RED (Lane A): create `crates/nopass-helper/tests/docs_headless.rs` —
       `docs_name_the_three_headless_subcommands_as_supported`: scans `docs/**.md` for the
       language-neutral tokens `grant`, `revoke`, `inspect`, `--uid` (headless-operation
       "Documentation lists the three headless subcommands as the supported path"). This test
       MUST fail before 10.1 exists. GREEN: satisfied by 10.1.
-- [ ] 10.3 RED (Lane A) `docs_headless.rs`:
+- [x] 10.3 RED (Lane A) `docs_headless.rs`:
       `docs_state_the_desktop_assumption_made_elsewhere`: scans for `allow_inactive=no` plus a
       mention of the three desktop-only preconditions (headless-operation "Documentation states
       the desktop assumption made elsewhere"). GREEN: satisfied by 10.1.
-- [ ] 10.3b RED (Lane A) `docs_headless.rs`:
+- [x] 10.3b RED (Lane A) `docs_headless.rs`:
       `no_doc_line_shows_a_pkexec_uid_forgery_without_marking_it_unsupported`: every line under
       `docs/` containing `PKEXEC_UID=` must also contain `NO SOPORTADO`. 10.2 and 10.3 assert
       only that the right things are PRESENT; nothing stopped a future edit from adding a
       copy-pasteable `sudo PKEXEC_UID=1000 …` example, which is the one outcome this whole
       change exists to prevent. Prove it is not vacuous with a fixture line that must be
       rejected.
-- [ ] 10.4 **The forgery guard, as a rule not a keyword ban** — RED (Lane A) `docs_headless.rs`:
+- [x] 10.4 **The forgery guard, as a rule not a keyword ban** — RED (Lane A) `docs_headless.rs`:
       `every_pkexec_uid_forgery_mention_is_labelled_unsupported`: every line in `docs/**.md`
       containing the literal `PKEXEC_UID=` also contains the literal `unsupported` (constant
       fixed in the test, covering the Spanish counterpart). A fixture line containing
