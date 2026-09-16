@@ -252,68 +252,68 @@ Phase 5 (`Cmd` variants must exist to match on).
 UID"; largest phase, kept as one unit because `Subject` threading through every `*_inner` is one
 seam)* — depends on Phases 3, 4, 6.
 
-- [ ] 7.1 RED (Lane A) `checks.rs` (read-only — `admit_uid` itself is unchanged): a table test
+- [x] 7.1 RED (Lane A) `checks.rs` (read-only — `admit_uid` itself is unchanged): a table test
       documents `admit_root_target`'s expected causes before it exists — uid 0, below `min`,
       above `max`, no passwd entry — each mapped to exit 11 with a distinct `audit_reason`. This
       test targets the not-yet-created `ops::admit_root_target` and fails to compile/RED until
       7.2 lands.
-- [ ] 7.2 Create `fn admit_root_target(subject: &Subject, range: &UidRange) -> Result<(),
+- [x] 7.2 Create `fn admit_root_target(subject: &Subject, range: &UidRange) -> Result<(),
       HelperError>` in `ops.rs` — the one shared wrapper-level admission function for `grant`,
       `revoke`, and `inspect`; audits its own rejection with the correct event and `SystemRoot`
       context via `journal::audit`. GREEN: satisfies 7.1.
-- [ ] 7.3 Modify `crates/nopass-helper/src/ops.rs` — `enable_inner` (`ops.rs:190`), `disable_inner`
+- [x] 7.3 Modify `crates/nopass-helper/src/ops.rs` — `enable_inner` (`ops.rs:190`), `disable_inner`
       (`ops.rs:345`), `status_inner` (`ops.rs:432`), `expire_uid_inner` (`ops.rs:478`, all
       read-only references for current signatures) each change their `uid: u32` parameter to
       `subject: Subject`; every internal `uid` use becomes `subject.uid()`; downstream calls
       (`fileops`, `timer`, `statefile`, `checks::admit_uid`, `layout.rule_path`) keep taking a
       bare `u32` unchanged.
-- [ ] 7.4 RED (Lane A) `ops.rs`: the existing `enable`/`disable`/`status` test suite (the whole
+- [x] 7.4 RED (Lane A) `ops.rs`: the existing `enable`/`disable`/`status` test suite (the whole
       block from `ops.rs:650` onward, read-only reference for current line) passes unchanged
       after retyping — each production wrapper now builds a `Subject::pkexec(ctx, event)` before
       calling its `*_inner`. GREEN: update `ops::enable`/`disable`/`status`/`expire` to construct
       a `Subject` and pass it through.
-- [ ] 7.5 Modify `ops.rs` — route `ops::expire` through `Subject::root_target(ctx, uid,
+- [x] 7.5 Modify `ops.rs` — route `ops::expire` through `Subject::root_target(ctx, uid,
       AuditEvent::Expire)` (the seam's only other `SystemRoot` consumer), so the seam is the
       single path rather than a second one.
-- [ ] 7.6 RED (Lane A) `ops.rs`: `pub fn grant(...)` — builds `Cmd::Grant`, resolves context via
+- [x] 7.6 RED (Lane A) `ops.rs`: `pub fn grant(...)` — builds `Cmd::Grant`, resolves context via
       `uid::resolve` (exit 10 path), `Subject::root_target(ctx, uid_flag, AuditEvent::Grant)`,
       `resolve_expiry_audited` (exit 13), `admit_root_target` (exit 11), then
       `enable_inner(subject, ...)`. Assert the happy path reaches `enable_inner` with a
       `SystemRoot`-sourced `Subject`. GREEN: implement `grant`.
-- [ ] 7.7 RED (Lane A) `ops.rs`: `admit_root_target` rejects uid 0 / below-min / above-max /
+- [x] 7.7 RED (Lane A) `ops.rs`: `admit_root_target` rejects uid 0 / below-min / above-max /
       no-passwd-entry for `grant`, `revoke`, and `inspect` alike, each exit 11 with no write
       (privilege-admission "A SystemRoot-context target still fails UID Range Admission the same
       way"). GREEN: satisfied by 7.2.
-- [ ] 7.8 RED (Lane A) `ops.rs`: `grant --uid 1000` targets uid 1000 regardless of any identity
+- [x] 7.8 RED (Lane A) `ops.rs`: `grant --uid 1000` targets uid 1000 regardless of any identity
       the invoking shell has (privilege-admission "A root-invoked grant targets a uid other than
       the caller's own"). GREEN: satisfied by 7.6.
-- [ ] 7.9 RED (Lane A) `ops.rs`: `enable`'s declared flag surface carries no `--uid`, and its
+- [x] 7.9 RED (Lane A) `ops.rs`: `enable`'s declared flag surface carries no `--uid`, and its
       resolved target is always the caller's own `PKEXEC_UID` (privilege-admission "enable stays
       self-targeted with no uid argument on its surface"). GREEN: none — pins the
       `Subject::pkexec` type-level guarantee from 3.2 at the CLI+ops boundary.
-- [ ] 7.10 RED (Lane A) `ops.rs`: `pub fn revoke(...)` calls `admit_root_target` before
+- [x] 7.10 RED (Lane A) `ops.rs`: `pub fn revoke(...)` calls `admit_root_target` before
       `disable_inner(subject, ...)`; `revoke --uid 0` exits 11 and writes nothing, even though
       `disable_inner` itself still runs no admission (design §3's "one real tension" — pins that
       `disable`'s pkexec path is untouched while `revoke`'s SystemRoot path is bounded). GREEN:
       implement `revoke`.
-- [ ] 7.11 RED (Lane A) `ops.rs`: `pub fn inspect(...)` calls `admit_root_target` then
+- [x] 7.11 RED (Lane A) `ops.rs`: `pub fn inspect(...)` calls `admit_root_target` then
       `status_inner(layout, subject.uid(), now)`, plus an `AuditEvent::Inspect` audit record; a
       uid with no rule prints `"active":false` and exits 0, byte-identical shape to `status`.
       GREEN: implement `inspect`.
-- [ ] 7.12 RED (Lane A) `ops.rs`: `grant`'s double `admit_uid` call (once in `admit_root_target`,
+- [x] 7.12 RED (Lane A) `ops.rs`: `grant`'s double `admit_uid` call (once in `admit_root_target`,
       once again inside `enable_inner`'s unchanged step 5) is pure and can only ever agree with
       the first — a table test confirms both calls reject the same uid identically, never
       diverging (threat matrix "Arbitrary-uid targeting"). GREEN: none — pins the deliberate
       double-check design decision from §3.
-- [ ] 7.13 RED (Lane A): threat matrix "Subprocess argv" completion — `grant`'s `--uid` reaches
+- [x] 7.13 RED (Lane A): threat matrix "Subprocess argv" completion — `grant`'s `--uid` reaches
       no new subprocess call site; existing `enable` argv assertions (`checks::is_sudoer`,
       `checks.rs:150`, read-only reference) already cover the only subprocess `enable_inner`
       spawns, and `grant` adds none. GREEN: none — structural confirmation, not new code.
-- [ ] 7.14 Modify `crates/nopass-helper/src/main.rs` — `dispatch` (`main.rs:61`, read-only
+- [x] 7.14 Modify `crates/nopass-helper/src/main.rs` — `dispatch` (`main.rs:61`, read-only
       reference for current signature) gains `Cmd::Grant { uid, until, until_reboot } =>
       ops::grant(...)`, `Cmd::Revoke { uid } => ops::revoke(...)`, `Cmd::Inspect { uid } =>
       ops::inspect(...)`.
-- [ ] 7.15 RED (Lane A) `main.rs`: extend `dispatch_routes_every_subcommand_and_rejects_missing_
+- [x] 7.15 RED (Lane A) `main.rs`: extend `dispatch_routes_every_subcommand_and_rejects_missing_
       pkexec_context` (`main.rs:80`, read-only reference) to include `Cmd::Grant`, `Cmd::Revoke`,
       `Cmd::Inspect` in its loop — each resolves to exit 10 under the unprivileged test process,
       proving `dispatch` reaches the real `ops::*` entry points. GREEN: satisfied by 7.14.
