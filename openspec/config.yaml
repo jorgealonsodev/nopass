@@ -79,6 +79,8 @@ rules:
     lint_command: "cargo clippy --workspace --all-targets -- -D warnings"
     gate_commands:
       - "scripts/assert-single-reactor.sh"
+      - "scripts/run-lane-root.sh"
+      - "scripts/run-lane-journal.sh"
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas

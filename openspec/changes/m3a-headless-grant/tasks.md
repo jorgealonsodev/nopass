@@ -356,7 +356,7 @@ Phase 4 (`context` field) and Phase 7 (wrappers emit it).
       produce their own record naming their own outcome, `SystemRoot` context, and target uid
       1000 (helper-observability "Revoke and inspect are journaled the same way"). GREEN:
       satisfied by 7.10–7.11.
-- [ ] 8.7 Modify `openspec/config.yaml` — add `scripts/run-lane-journal.sh` to
+- [x] 8.7 Modify `openspec/config.yaml` — add `scripts/run-lane-journal.sh` to
       `rules.verify.gate_commands` (deferred to Phase 11's consolidated config edit to avoid two
       commits touching the same line — tracked here, executed there).
 
@@ -430,18 +430,18 @@ the Supported Headless Commands")* — depends on Phase 5 (subcommands must exis
 
 *(Design §8; ties every lane created above into the commands `sdd-verify` actually runs)*
 
-- [ ] 11.1 Modify `openspec/config.yaml` — `rules.verify.gate_commands` gains
+- [x] 11.1 Modify `openspec/config.yaml` — `rules.verify.gate_commands` gains
       `scripts/run-lane-root.sh` and `scripts/run-lane-journal.sh` (both G1 resolved and G1/G2
       isolated per Phase 8), alongside the existing `scripts/assert-single-reactor.sh` (read-only
       reference for the current entry).
-- [ ] 11.2 Modify `tests/containers/README.md` — add the journald lane's row to the per-lane
+- [x] 11.2 Modify `tests/containers/README.md` — add the journald lane's row to the per-lane
       table (mirroring the existing Root/Debian-Fedora row), add its Quick-path invocation, and
       add its checklist line — satisfying `lane_wiring.rs`'s second assertion (1.1) for
       `NOPASS_JOURNAL_TESTS` now that `root_journal.rs` exists.
-- [ ] 11.3 RED (Lane A) — re-run `cargo test -p nopass-helper --test lane_wiring` as the final
+- [x] 11.3 RED (Lane A) — re-run `cargo test -p nopass-helper --test lane_wiring` as the final
       gate of this change: both `NOPASS_ROOT_TESTS` and `NOPASS_JOURNAL_TESTS` are named by a
       runner script and both scripts are named in the README checklist. GREEN: satisfied by
       11.1–11.2; this is the change's own proof that it did not repeat the bug it fixes.
-- [ ] 11.4 Confirm `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D
+- [x] 11.4 Confirm `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D
       warnings`, `bash scripts/run-lane-root.sh`, and `bash scripts/run-lane-journal.sh` all exit
       0 under the pinned 1.85 toolchain — the proposal's Success Criteria closing line.
