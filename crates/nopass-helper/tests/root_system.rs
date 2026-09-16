@@ -724,3 +724,111 @@ root_only_test!(real_expire_as_non_root_without_pkexec_uid_is_rejected_with_exit
 
     delete_test_user(user);
 });
+
+// --- 13-14. headless-operation: the two transaction-level scenarios -------
+//
+// design.md §8 Testing strategy row "2 headless-operation transaction
+// scenarios | root-only container test | tests/root_system.rs, lane R".
+// Phase 7's `ops::{grant,revoke,inspect}` wrappers already resolve their
+// invocation context via `uid::resolve`'s SystemRoot arm, which requires
+// real uid 0 and an absent/empty `PKEXEC_UID` — exactly what every
+// `run_helper` call in this suite already invokes with, since
+// `run_helper` calls `env_clear()` unconditionally before ever setting
+// `PKEXEC_UID` (see its doc comment above). That means DISPLAY and
+// DBUS_SESSION_BUS_ADDRESS are already absent for every test in this
+// file, and no `nopass` tray process is spawned anywhere in this suite
+// or its containers — the "no session" precondition these two scenarios
+// name is not a special setup, it is simply not undoing it.
+//
+// Task 9.3 (headless-operation "Install, grant, and revoke complete end
+// to end with no session", Testable via note): this is deliberately
+// proven ONLY here, in lane R (`scripts/run-lane-root.sh`), never in lane
+// B (`scripts/run-lane-b.sh`). Lane B exists to give the tray a real
+// D-Bus session bus for the enable/disable/status polkit-agent path
+// (`m3-menu-and-config`'s scope) — running this scenario there would
+// assert a session bus IS present while proving one is unnecessary,
+// which contradicts the scenario itself. No lane B test file references
+// `grant`, `revoke`, or `inspect` for this reason, and none should be
+// added: the property under test is precisely their independence from
+// any bus, display, or tray.
+
+root_only_test!(grant_succeeds_with_no_session_environment_present, {
+    let _guard = serialize();
+    // headless-operation §No Desktop Session Required, "Grant succeeds
+    // with no session environment present": grant must complete
+    // identically to a run with a full desktop session present.
+    let layout = Layout::system();
+    let user = "nopasstest13";
+    let uid = create_test_user(user);
+    cleanup_rule_and_state(&layout, uid);
+
+    let output = run_helper(&["grant", "--uid", &uid.to_string(), "--until-reboot"], None);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "grant must complete with no session environment present; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(layout.rule_path(uid).exists(), "grant must write the sudoers rule despite no session environment");
+
+    let _ = run_helper(&["revoke", "--uid", &uid.to_string()], None);
+    cleanup_rule_and_state(&layout, uid);
+    delete_test_user(user);
+});
+
+root_only_test!(install_grant_inspect_revoke_completes_end_to_end_with_no_session, {
+    let _guard = serialize();
+    // headless-operation §No Desktop Session Required, "Install, grant,
+    // and revoke complete end to end with no session": every step exits
+    // 0, and the sudoers rule and state file reflect each transition —
+    // the transaction-level proof; GREEN is satisfied entirely by Phase
+    // 7's existing grant/inspect/revoke wrappers (design.md §8, task
+    // 9.2).
+    let layout = Layout::system();
+    let user = "nopasstest14";
+    let uid = create_test_user(user);
+    cleanup_rule_and_state(&layout, uid);
+
+    let grant_output = run_helper(&["grant", "--uid", &uid.to_string(), "--until-reboot"], None);
+    assert_eq!(
+        grant_output.status.code(),
+        Some(0),
+        "grant must exit 0 with no session present; stderr={}",
+        String::from_utf8_lossy(&grant_output.stderr)
+    );
+    assert!(layout.rule_path(uid).exists(), "grant must write the sudoers rule");
+    let raw_after_grant = std::fs::read_to_string(layout.state_path(uid)).expect("state file must exist after grant");
+    let status_after_grant: HelperStatus = serde_json::from_str(raw_after_grant.trim_end())
+        .expect("state file must be valid HelperStatus JSON after grant");
+    assert!(status_after_grant.active, "state file must record the grant as active");
+
+    let inspect_output = run_helper(&["inspect", "--uid", &uid.to_string()], None);
+    assert_eq!(
+        inspect_output.status.code(),
+        Some(0),
+        "inspect must exit 0 with no session present; stderr={}",
+        String::from_utf8_lossy(&inspect_output.stderr)
+    );
+    let inspect_stdout = String::from_utf8(inspect_output.stdout).expect("inspect stdout must be valid UTF-8");
+    let inspect_status: HelperStatus =
+        serde_json::from_str(inspect_stdout.trim_end()).expect("inspect stdout must be valid HelperStatus JSON");
+    assert_eq!(inspect_status.uid, uid);
+    assert!(inspect_status.active, "inspect must report the grant as still active before revoke");
+
+    let revoke_output = run_helper(&["revoke", "--uid", &uid.to_string()], None);
+    assert_eq!(
+        revoke_output.status.code(),
+        Some(0),
+        "revoke must exit 0 with no session present; stderr={}",
+        String::from_utf8_lossy(&revoke_output.stderr)
+    );
+    assert!(!layout.rule_path(uid).exists(), "revoke must remove the sudoers rule");
+    let raw_after_revoke =
+        std::fs::read_to_string(layout.state_path(uid)).expect("state file must still exist, now inactive");
+    let status_after_revoke: HelperStatus = serde_json::from_str(raw_after_revoke.trim_end())
+        .expect("state file must be valid HelperStatus JSON after revoke");
+    assert!(!status_after_revoke.active, "state file must record the revoke as inactive");
+
+    cleanup_rule_and_state(&layout, uid);
+    delete_test_user(user);
+});

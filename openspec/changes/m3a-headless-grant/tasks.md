@@ -366,20 +366,20 @@ Phase 4 (`context` field) and Phase 7 (wrappers emit it).
 
 *(Design §8; Spec: headless-operation "No Desktop Session Required")* — depends on Phase 7.
 
-- [ ] 9.1 Modify `crates/nopass-helper/tests/root_system.rs` (read-only for its existing 15
+- [x] 9.1 Modify `crates/nopass-helper/tests/root_system.rs` (read-only for its existing 15
       tests; modified to add two more) — `grant_succeeds_with_no_session_environment_present`:
       under real root inside the container (`NOPASS_ROOT_TESTS=1` + `geteuid().is_root()`),
       `env_clear()` removes `DISPLAY`/`DBUS_SESSION_BUS_ADDRESS`, run
       `grant --uid <admitted uid> --until-reboot`, assert exit 0 and the sudoers rule exists
       (headless-operation "Grant succeeds with no session environment present").
-- [ ] 9.2 RED (Lane R) `root_system.rs`:
+- [x] 9.2 RED (Lane R) `root_system.rs`:
       `install_grant_inspect_revoke_completes_end_to_end_with_no_session`: sequential
       `grant --uid <uid>` → `inspect --uid <uid>` → `revoke --uid <uid>`, each under `env_clear`,
       each exits 0; the sudoers rule and state file reflect each transition (headless-operation
       "Install, grant, and revoke complete end to end with no session"; success criterion "Install
       → grant → revoke completes with no desktop session"). GREEN: satisfied by Phase 7's
       wrappers; this is the transaction-level proof.
-- [ ] 9.3 RED (Lane R): confirm no lane B (`scripts/run-lane-b.sh`, read-only reference) assertion
+- [x] 9.3 RED (Lane R): confirm no lane B (`scripts/run-lane-b.sh`, read-only reference) assertion
       exists for either 9.1 or 9.2 — a comment-level check in the same test module documenting
       why: lane B exists to give the tray a session bus, which these scenarios assert is
       unnecessary. GREEN: none — documentation-as-test-comment, not an executable assertion.
