@@ -15,6 +15,83 @@ fn lang_c_env() -> Vec<(String, String)> {
     vec![("LANG".to_string(), "C".to_string()), ("LC_ALL".to_string(), "C".to_string())]
 }
 
+/// One `systemd-run` property token, tagged with the unit section it
+/// belongs to. `UNIT_PROPERTIES` below is the **only** place the five
+/// `AccuracySec=1s`/`Persistent=false`/`WakeSystem=false`/
+/// `RemainAfterElapse=false`/`Type=oneshot` spellings exist
+/// (design.md §6.1): `property_args()` renders them into the argv
+/// `schedule` sends to `systemd-run`, and `synthesize_unit()` renders the
+/// SAME array into `[Timer]`/`[Service]` unit-file text that
+/// `crates/nopass-helper/tests/systemd_unit_contract.rs` hands to real
+/// `systemd-analyze verify`. A gate that re-spells these tokens instead of
+/// reading this array would prove only that the string can be typed
+/// twice, not that production argv and the gate agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitProperty {
+    Timer(&'static str),
+    Service(&'static str),
+}
+
+/// The five non-calendar `systemd-run` property tokens, in the fixed
+/// order `schedule`'s argv has always used. Argv bytes produced by
+/// [`property_args`] are unchanged from the literal list this array
+/// replaces — `schedule_builds_the_exact_pinned_systemd_run_argv_in_order`
+/// (below) passes unmodified as the proof of that.
+pub const UNIT_PROPERTIES: [UnitProperty; 5] = [
+    UnitProperty::Timer("AccuracySec=1s"),
+    UnitProperty::Timer("Persistent=false"),
+    UnitProperty::Timer("WakeSystem=false"),
+    UnitProperty::Timer("RemainAfterElapse=false"),
+    UnitProperty::Service("Type=oneshot"),
+];
+
+/// Renders [`UNIT_PROPERTIES`] into the `--timer-property=`/`--property=`
+/// flags `schedule` sends to `systemd-run`, in array order. One flag per
+/// entry, nothing else — pinned by
+/// `every_unit_property_appears_in_the_production_argv`.
+pub fn property_args() -> Vec<String> {
+    UNIT_PROPERTIES
+        .iter()
+        .map(|property| match property {
+            UnitProperty::Timer(value) => format!("--timer-property={value}"),
+            UnitProperty::Service(value) => format!("--property={value}"),
+        })
+        .collect()
+}
+
+/// Renders `[Timer]`/`[Service]` unit-file text for `uid`'s expiry timer
+/// from the SAME [`UNIT_PROPERTIES`] array [`property_args`] reads, so the
+/// real-tool gate in `tests/systemd_unit_contract.rs` validates exactly
+/// what `schedule` sends to `systemd-run` — not a second, hand-copied set
+/// of spellings. `--unit=` becomes the caller-chosen filename
+/// (`<unit_name(uid)>.timer`/`.service`, validating an illegal unit name
+/// as an illegal filename); `--description=` becomes the `[Unit]`
+/// `Description=` directive; `--on-calendar=` becomes `OnCalendar=`;
+/// `ExecStart=` targets [`nopass_core::paths::HELPER_PATH`], the same
+/// target `schedule`'s argv appends after the property flags. Returns
+/// `(timer_unit_text, service_unit_text)`; the caller writes them to
+/// `<unit_name(uid)>.timer`/`.service` before running `systemd-analyze
+/// verify` over them.
+pub fn synthesize_unit(uid: u32, epoch: u64) -> (String, String) {
+    let mut timer_properties = String::new();
+    let mut service_properties = String::new();
+    for property in &UNIT_PROPERTIES {
+        match property {
+            UnitProperty::Timer(value) => timer_properties.push_str(&format!("{value}\n")),
+            UnitProperty::Service(value) => service_properties.push_str(&format!("{value}\n")),
+        }
+    }
+    let timer_unit = format!(
+        "[Unit]\nDescription=NoPass expiry for uid {uid}\n\n[Timer]\nOnCalendar={}\n{timer_properties}",
+        nopass_core::timefmt::format_systemd_calendar(epoch)
+    );
+    let service_unit = format!(
+        "[Unit]\nDescription=NoPass expiry for uid {uid}\n\n[Service]\n{service_properties}ExecStart={} expire --uid {uid}\n",
+        nopass_core::paths::HELPER_PATH
+    );
+    (timer_unit, service_unit)
+}
+
 /// The base unit name for `uid`'s expiry timer: `nopass-expire-<uid>`.
 /// systemd materializes `<name>.timer` and `<name>.service` from it.
 pub fn unit_name(uid: u32) -> String {
@@ -49,25 +126,20 @@ pub fn stop(runner: &dyn CommandRunner, binaries: &Binaries, uid: u32) {
 /// row-15 rule rollback and report `rolled_back: true`.
 pub fn schedule(runner: &dyn CommandRunner, binaries: &Binaries, uid: u32, epoch: u64) -> Result<(), HelperError> {
     let systemd_run = binaries.resolve("systemd-run")?.to_path_buf();
-    let spec = CommandSpec {
-        program: systemd_run,
-        args: vec![
-            format!("--unit={}", unit_name(uid)),
-            format!("--description=NoPass expiry for uid {uid}"),
-            format!("--on-calendar={}", nopass_core::timefmt::format_systemd_calendar(epoch)),
-            "--timer-property=AccuracySec=1s".to_string(),
-            "--timer-property=Persistent=false".to_string(),
-            "--timer-property=WakeSystem=false".to_string(),
-            "--timer-property=RemainAfterElapse=false".to_string(),
-            "--property=Type=oneshot".to_string(),
-            nopass_core::paths::HELPER_PATH.to_string(),
-            "expire".to_string(),
-            "--uid".to_string(),
-            uid.to_string(),
-        ],
-        env: lang_c_env(),
-        expect: Expect::Zero,
-    };
+    let mut args = vec![
+        format!("--unit={}", unit_name(uid)),
+        format!("--description=NoPass expiry for uid {uid}"),
+        format!("--on-calendar={}", nopass_core::timefmt::format_systemd_calendar(epoch)),
+    ];
+    // The five property flags read UNIT_PROPERTIES — the same array
+    // synthesize_unit() renders into unit-file text for the real-tool
+    // gate — so argv and the gate can never drift apart (design.md §6.1).
+    args.extend(property_args());
+    args.push(nopass_core::paths::HELPER_PATH.to_string());
+    args.push("expire".to_string());
+    args.push("--uid".to_string());
+    args.push(uid.to_string());
+    let spec = CommandSpec { program: systemd_run, args, env: lang_c_env(), expect: Expect::Zero };
     runner.run(&spec).map_err(|_| HelperError::TimerFailed { rolled_back: false })?;
     Ok(())
 }

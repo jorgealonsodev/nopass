@@ -356,30 +356,30 @@ menu item exists yet that can construct an `Action::Enable`.
 *(Design §6; Spec: helper-cli (real-tool scenarios))* — depends on Phase 1 (`toolgate::require`).
 Independent of Phases 2–8; `systemd-analyze` is present today, so this runs in Lane A now.
 
-- [ ] 9.1 Modify `crates/nopass-helper/src/timer.rs` — `enum UnitProperty { Timer(&'static str),
+- [x] 9.1 Modify `crates/nopass-helper/src/timer.rs` — `enum UnitProperty { Timer(&'static str),
       Service(&'static str) }`, `const UNIT_PROPERTIES: [UnitProperty; 5]` (the five
       `AccuracySec=1s`/`Persistent=false`/`WakeSystem=false`/`RemainAfterElapse=false`/`Type=oneshot`
       spellings), `property_args()`, `synthesize_unit(uid, epoch)` — the **only** place these
       spellings exist; argv bytes produced by `property_args()` unchanged from the current literal
       list.
-- [ ] 9.2 RED (Lane A) `timer.rs`: `schedule_builds_the_exact_pinned_systemd_run_argv_in_order`
+- [x] 9.2 RED (Lane A) `timer.rs`: `schedule_builds_the_exact_pinned_systemd_run_argv_in_order`
       (existing, `timer.rs:125`) still passes unchanged after the refactor. GREEN: satisfied by 9.1's
       construction.
-- [ ] 9.3 Create `crates/nopass-helper/tests/systemd_unit_contract.rs` —
+- [x] 9.3 Create `crates/nopass-helper/tests/systemd_unit_contract.rs` —
       `the_production_unit_properties_are_accepted_by_systemd_analyze`: `toolgate::require
       ("systemd-analyze", ...)`, `synthesize_unit` into a `TempDir`, `systemd-analyze verify
       <tmp>/x.timer <tmp>/x.service`, assert no diagnostic outside a narrow "`ExecStart=` command does
       not exist/is not executable" allowlist (`HELPER_PATH` deliberately not installed in Lane A)
       (helper-cli "The synthesized systemd-run unit is accepted by real systemd").
-- [ ] 9.4 RED (Lane A): **negative control** —
+- [x] 9.4 RED (Lane A): **negative control** —
       `a_corrupted_property_token_is_rejected_by_systemd_analyze`: the same synthesis with
       `AccuracySec=1s` mutated to `AccuracySecc=1s` MUST be rejected by `systemd-analyze verify`
       (helper-cli "A corrupted property token fails the gate"). GREEN: none — this test's pass/fail
       *is* the gate; if the allowlist in 9.3 ever widens enough to swallow this, the suite must fail.
-- [ ] 9.5 RED (Lane A): `every_unit_property_appears_in_the_production_argv` — `property_args()`
+- [x] 9.5 RED (Lane A): `every_unit_property_appears_in_the_production_argv` — `property_args()`
       contains exactly one flag per `UNIT_PROPERTIES` entry and nothing else, pinning that argv and
       the gate read the same array. GREEN: covered by 9.1.
-- [ ] 9.6 RED (Lane A): absence of `systemd-analyze` (binary hidden from `PATH` in a controlled
+- [x] 9.6 RED (Lane A): absence of `systemd-analyze` (binary hidden from `PATH` in a controlled
       sub-environment) makes 9.3 **fail**, not skip — `toolgate::require` panics inside the test
       (helper-cli "Absence of systemd-analyze fails the gate, not skips it"). GREEN: satisfied by
       1.3's shared `toolgate::require`, reused here rather than re-implemented.
