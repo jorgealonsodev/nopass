@@ -392,38 +392,41 @@ Independent of Phases 2–8; `systemd-analyze` is present today, so this runs in
 (`toolgate::require`) and Phase 8 (the fake-authority half of readiness consumption, 8.5). **This
 machine has `docker` 29.8.0, not `podman`** — detect the runtime, do not hardcode `podman`.
 
-- [ ] 10.1 Create `tests/containers/Containerfile.polkit` — a plain image (rootful, **not**
+- [x] 10.1 Create `tests/containers/Containerfile.polkit` — a plain image (rootful, **not**
       `--privileged`, **not** systemd-as-PID-1 — distinct from the out-of-scope
       `Containerfile.systemd`) whose entrypoint starts `dbus-daemon --system` and
       `/usr/lib/polkit-1/polkitd`, installs `data/com.enfoquestic.nopass.policy` into
       `/usr/share/polkit-1/actions/`, and runs `cargo test -p nopass-helper --test polkit_contract`.
-- [ ] 10.2 Create `scripts/run-lane-polkit.sh` — detects the available container runtime (`docker`
+- [x] 10.2 Create `scripts/run-lane-polkit.sh` — detects the available container runtime (`docker`
       first on this machine since `podman` is absent; falls back to `podman` when present) rather than
       hardcoding one; builds and runs `Containerfile.polkit` with `NOPASS_POLKIT_TESTS=1`; exits
       non-zero when neither runtime is found.
-- [ ] 10.3 Create `crates/nopass-helper/tests/polkit_contract.rs` —
+- [x] 10.3 Create `crates/nopass-helper/tests/polkit_contract.rs` —
       `the_installed_policy_is_enumerated_by_the_real_authority`: `pkaction --action-id
       com.enfoquestic.nopass.manage --verbose`, exit 0, stdout reports `implicit active:
       auth_admin_keep` (privilege-admission "The real polkit engine enumerates the installed
       action").
-- [ ] 10.4 RED: **negative control** — `a_malformed_policy_is_not_enumerated`: install a deliberately
+- [x] 10.4 RED: **negative control** — `a_malformed_policy_is_not_enumerated`: install a deliberately
       broken copy under a second action id, assert it is absent from `pkaction`'s output
       (privilege-admission "A malformed policy file fails enumeration"). GREEN: none — this test's
       pass/fail *is* the gate; without it a `pkaction` listing everything would pass 10.3 vacuously.
-- [ ] 10.5 RED: `the_exec_path_annotation_matches_the_shipped_helper_path` — `pkaction --verbose`'s
+- [x] 10.5 RED: `the_exec_path_annotation_matches_the_shipped_helper_path` — `pkaction --verbose`'s
       `org.freedesktop.policykit.exec.path` equals `nopass_core::paths::HELPER_PATH`. GREEN: satisfied
       by the unchanged policy file; test pins the constant match.
-- [ ] 10.6 RED: absence of a reachable polkit authority (neither runtime present, or the container's
+- [x] 10.6 RED: absence of a reachable polkit authority (neither runtime present, or the container's
       `polkitd` fails to start) makes `scripts/run-lane-polkit.sh` exit non-zero, never a silent skip
       (privilege-admission "Absence of a polkit authority fails the gate, not skips it"). GREEN:
       satisfied by 10.2's runtime-detection exit path.
-- [ ] 10.7 Modify `openspec/config.yaml` — add `scripts/run-lane-polkit.sh` to `verify.gate_commands`
+- [x] 10.7 Modify `openspec/config.yaml` — add `scripts/run-lane-polkit.sh` to `verify.gate_commands`
       so `sdd-verify` executes it.
 - [ ] 10.8 **Pre-agreed fallback, do not improvise** — if the container lane cannot be stood up inside
       this change's budget: degrade to (a) a Lane C manual checklist item recording verbatim
       `pkaction` output in the verify report, and (b) relabel `data_artifacts.rs`'s existing substring
       assertions in their own module doc as "shape, not acceptance — this is not the Rank 2 gate".
       Never degrade to a substring-only assertion presented as the gate.
+      **NOT TAKEN**: the real container lane stood up successfully within budget (see verify
+      evidence below) — `scripts/run-lane-polkit.sh` exits 0 against a real polkitd, so the
+      fallback's degrade actions were not applicable and were not performed.
 
 ---
 

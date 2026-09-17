@@ -1,0 +1,86 @@
+# Rank 2 hardening gate — real polkit authority lane (design.md §6.2;
+# privilege-admission real-authority scenarios; task 10.1). Builds a
+# PLAIN image — rootful, NOT --privileged, NOT systemd-as-PID-1, distinct
+# from the out-of-scope Containerfile.systemd — whose entrypoint starts a
+# private `dbus-daemon --system` and the real `/usr/lib/polkit-1/polkitd`,
+# then runs `cargo test -p nopass-helper --test polkit_contract` against
+# them. `data/com.enfoquestic.nopass.policy` and the deliberately
+# malformed `tests/containers/fixtures/com.enfoquestic.nopass.malformed.policy`
+# (task 10.4's negative control) are installed into
+# `/usr/share/polkit-1/actions/` at BUILD time below — polkitd loads
+# every `*.policy` file under that directory at startup, so no runtime
+# hot-reload trick is needed, and polkitd was verified by hand (while
+# authoring this image) to skip the malformed file and still enumerate
+# the valid one from the same directory.
+#
+# `podman` is absent on the machine this was authored against; `docker`
+# 29.8.0 is present and provides the same `build -f/-t` and
+# `run --rm -e` flags this lane needs. `scripts/run-lane-polkit.sh`
+# detects the runtime, not this file.
+
+FROM debian:12-slim
+
+# `policykit-1`: pulls in the real `polkitd`, `pkaction`, `pkcheck`,
+# `pkexec` (design.md §6.2's real authority — verified present at
+# `/usr/lib/polkit-1/polkitd` on Debian 12 while authoring this image).
+# `dbus`: `dbus-daemon` for a PRIVATE system bus this container starts
+# itself — no host D-Bus is used or required.
+# `build-essential`/`pkg-config`: same as every other Containerfile in
+# this tree, for crates with a `build.rs`.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        policykit-1 \
+        dbus \
+        ca-certificates \
+        curl \
+        build-essential \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# `--default-toolchain none`: the pinned toolchain comes from
+# rust-toolchain.toml once the workspace is copied in below — see
+# Containerfile.debian's identical comment.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain none --profile minimal
+
+WORKDIR /workspace
+COPY . .
+
+RUN rustup show && cargo fetch --locked
+
+# Task 10.1/10.4: bake in the real shipped policy and the malformed
+# negative-control fixture before polkitd ever starts.
+RUN cp data/com.enfoquestic.nopass.policy \
+        /usr/share/polkit-1/actions/com.enfoquestic.nopass.policy \
+    && cp tests/containers/fixtures/com.enfoquestic.nopass.malformed.policy \
+        /usr/share/polkit-1/actions/com.enfoquestic.nopass.malformed.policy
+
+# Baked-in startup sequence (task 10.1/10.6): start a private system bus,
+# start the real polkitd, confirm it is still alive (never a silent skip
+# when it dies immediately — half of "absence of a polkit authority
+# fails the gate, not skips it"; the other half is
+# scripts/run-lane-polkit.sh's own runtime-detection exit path), then run
+# exactly the polkit contract suite. NOPASS_POLKIT_TESTS is set by the
+# caller (scripts/run-lane-polkit.sh's `docker run -e`), not baked in
+# here — matching Containerfile.journald/run-lane-journal.sh.
+RUN printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'set -euo pipefail' \
+        'mkdir -p /run/dbus' \
+        'dbus-daemon --system --fork' \
+        'sleep 1' \
+        '/usr/lib/polkit-1/polkitd --no-debug &' \
+        'polkitd_pid=$!' \
+        'sleep 2' \
+        'if ! kill -0 "$polkitd_pid" 2>/dev/null; then' \
+        '    echo "run-lane-polkit: polkitd exited before becoming ready -- no real polkit authority reachable" >&2' \
+        '    exit 1' \
+        'fi' \
+        'exec cargo test -p nopass-helper --test polkit_contract' \
+        > /entrypoint.sh \
+    && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,6 +1,6 @@
 # Container test lanes
 
-Five lanes. Four are gates you run before every change. One is manual and
+Six lanes. Five are gates you run before every change. One is manual and
 you run it only when you need to see systemd itself do something.
 
 ## Quick path
@@ -31,9 +31,16 @@ bash scripts/run-lane-root.sh
 #    PID 1 systemd required (design.md §0 G1). Same runtime detection as
 #    Lane R:
 bash scripts/run-lane-journal.sh
+
+# 5. Rank 2 hardening gate — real polkit authority (design.md §6.2,
+#    m3-menu-and-config task 10.2). Proves data/com.enfoquestic.nopass.policy
+#    is actually accepted and enumerated by a REAL polkitd, not only by
+#    our own substring assertions (crates/nopass-helper/tests/
+#    data_artifacts.rs). Same runtime detection as Lane R and Lane R-J:
+bash scripts/run-lane-polkit.sh
 ```
 
-All four above must exit 0. The manual systemd lane (further down this
+All five above must exit 0. The manual systemd lane (further down this
 document) is not part of this and is never required before landing a
 change.
 
@@ -45,6 +52,7 @@ change.
 | Headless session bus (Lane B) | `Containerfile.dbus` (only needed where the host lacks `dbus-run-session`, e.g. CI) | Yes, always | your own user — no root, inside or outside a container | Everything a real private session bus can show without a desktop: `com.enfoquestic.nopass` name ownership and the `NameTaken`/nudge path, StatusNotifierItem registration and property values against a fake watcher, and notification payloads against a fake `org.freedesktop.Notifications` — never rendering, which only Lane C can prove |
 | Root, Debian/Fedora | `Containerfile.debian`, `Containerfile.fedora` | Yes, both distros | root, inside a disposable container | Everything the unprivileged lane structurally cannot: real `/etc/sudoers.d` writes with real `root:root` ownership, a real `visudo -cf`, real `getpwuid`/`getgrouplist`, a real `/run/nopass` state file, real lock contention, a real rename-failure rollback, and `expire --boot` against real files |
 | Journald read-back (Lane R-J) | `Containerfile.journald` | Yes, always | root, inside a disposable container with a standalone journald (no PID 1 systemd) | The one thing the unprivileged and root lanes cannot: a real `journalctl` read-back of `NOPASS_CONTEXT`/`NOPASS_UID`, proving a root-invoked `grant`/`revoke`/`inspect` is distinguishable from a pkexec-invoked `enable` for the same uid — including the negative control that a mismatched context+uid query returns nothing |
+| Rank 2 polkit gate | `Containerfile.polkit` | Yes, always | root, inside a disposable container running a private `dbus-daemon --system` + a real `polkitd` | That `data/com.enfoquestic.nopass.policy` is actually parsed and enumerated by a real polkit authority, not only matched as text by our own assertions — including the negative control that a deliberately malformed sibling action file is absent from `pkaction`'s enumeration |
 | Manual, full systemd | `Containerfile.systemd` | **No** — never run in CI, never required before landing a change, and **never executed end to end in this repository** — see below | root, systemd as PID 1 | The one thing no gate lane can show: an actual `systemd-run` timer firing, `nopass-cleanup.service` running at real boot, and `journalctl -t nopass-helper` producing real records |
 
 Lane C — a real desktop session with a human watching — is not a container
@@ -175,8 +183,10 @@ exactly what a disposable, throwaway container is for.
 - [ ] `bash scripts/run-lane-b.sh` exits 0 (directly, or via `Containerfile.dbus` if your machine has no `dbus-run-session`).
 - [ ] `bash scripts/run-lane-root.sh` exits 0 (builds and runs both the Debian and Fedora root-lane images).
 - [ ] `bash scripts/run-lane-journal.sh` exits 0 (builds and runs the journald read-back image).
+- [ ] `bash scripts/run-lane-polkit.sh` exits 0 (builds and runs the Rank 2 polkit-authority image; design.md §6.2).
 - [ ] If you touched `timer.rs`, `fileops.rs`, `lock.rs`, `checks.rs`, or `ops.rs`, you re-ran the root lane at least once — the unprivileged lane cannot see a real `root:root` file or a real `visudo`.
 - [ ] If you touched `journal.rs`, `subject.rs`, or any `ops.rs` call site that constructs an `AuditRecord`, you re-ran the journald lane at least once — neither the unprivileged nor the root lane has a real journald to read back from.
+- [ ] If you touched `data/com.enfoquestic.nopass.policy` or `crates/nopass-helper/tests/data_artifacts.rs`, you re-ran the polkit lane at least once — only a real `polkitd` can prove the file is actually accepted, not only text-matched.
 - [ ] If you touched `tray.rs`, `notifications.rs`, `instance.rs`, or anything `crates/nopass/tests/dbus_session.rs` exercises, you re-ran Lane B at least once — the unprivileged lane never opens a bus connection.
 - [ ] The manual systemd lane is untouched by your change unless you specifically need to verify timer/boot behavior; it is never a release blocker, and has never been run end to end — do not cite it as passing evidence.
 - [ ] If your change touches `crates/nopass/` at all, Lane C's checklist (`../manual/README.md`) has been run at least once on a real desktop session and its result recorded in the verify report — it is never a gate, but it is the only place panel rendering and polkit authentication can be proven.

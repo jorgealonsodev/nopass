@@ -81,6 +81,7 @@ rules:
       - "scripts/assert-single-reactor.sh"
       - "scripts/run-lane-root.sh"
       - "scripts/run-lane-journal.sh"
+      - "scripts/run-lane-polkit.sh"
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas

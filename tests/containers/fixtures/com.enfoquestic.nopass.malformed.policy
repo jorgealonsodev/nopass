@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Deliberately malformed polkit action file — the negative control for
+  Phase 10's Rank 2 hardening gate (design.md §6.2 test 2; task 10.4;
+  privilege-admission "A malformed policy file fails enumeration").
+
+  This file is NEVER installed under the fixed action id
+  com.enfoquestic.nopass.manage: it declares its own, distinct id
+  (com.enfoquestic.nopass.malformed) so its intentional breakage cannot be
+  confused with the real shipped data/com.enfoquestic.nopass.policy, and
+  its absence from `pkaction`'s enumeration is the assertion under test,
+  not a side effect.
+
+  The defect is a genuinely unclosed <action> element (and therefore an
+  unclosed <policyconfig>) — a real GMarkup parse failure, not a
+  DTD-only violation, matching the "hand-written GMarkup parser that does
+  not consult the DTD" fact design.md §6.2 states about polkitd's real
+  loader. Verified by hand while authoring Containerfile.polkit: polkitd
+  logs the failure for this file and skips it, while still loading
+  data/com.enfoquestic.nopass.policy from the same directory — this file
+  must never gain a closing </action></policyconfig> pair, or it stops
+  being the negative control it exists to be.
+-->
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>NoPass</vendor>
+  <action id="com.enfoquestic.nopass.malformed">
+    <description>Deliberately malformed policy for the Rank 2 negative control</description>
+    <message>This file must never be enumerated by a real polkit authority</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
