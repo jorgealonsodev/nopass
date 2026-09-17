@@ -20,6 +20,8 @@ use futures_lite::StreamExt;
 use zbus::Connection;
 
 use nopass::app::{self, App};
+use nopass::autostart;
+use nopass::config;
 use nopass::instance::{self, Acquisition, AppInterface, OBJECT_PATH};
 use nopass::invoke::Locale;
 use nopass::notifications::{FreedesktopNotifier, NotifyPort};
@@ -34,7 +36,6 @@ use nopass::tray::{KsniTray, TrayPort, ViewModel};
 const SNI_WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 const NOTIFICATIONS_NAME: &str = "org.freedesktop.Notifications";
 const POLKIT_AUTHORITY_NAME: &str = "org.freedesktop.PolicyKit1";
-const POLKIT_ACTION_ID: &str = "com.enfoquestic.nopass.manage";
 const POLKIT_POLICY_FILE: &str = "/usr/share/polkit-1/actions/com.enfoquestic.nopass.policy";
 
 fn main() {
@@ -145,8 +146,21 @@ async fn boot_async() -> i32 {
     // Events").
     spawn_tray_event_forwarder(tray_events, events_tx.clone());
 
+    // Task 8.4: re-run the polkit ladder whenever
+    // `org.freedesktop.PolicyKit1` changes owner (a package upgrade
+    // restarting `polkitd`), so a startup `ActionMissing` — or one that
+    // appears later — recovers without a tray restart.
+    spawn_polkit_watch(events_tx.clone());
+
     let pkexec = resolve_first_absolute(&["/usr/bin/pkexec", "/bin/pkexec"]);
     let sudo = resolve_first_absolute(&["/usr/bin/sudo", "/bin/sudo"]);
+
+    // Task 8.1/8.3: `Config` is resolved once here (never blocks startup —
+    // `config::resolve` always yields a usable value, design.md §4 D4) and
+    // re-read by `App` itself at every `Trigger::MenuOpened` thereafter.
+    let config_path = config::path();
+    let (initial_config, _fault) = config::resolve(&config::read(&config_path));
+    let autostart_path = autostart::path();
 
     let app = App::new(
         user,
@@ -162,6 +176,10 @@ async fn boot_async() -> i32 {
         events_rx,
         run_dir,
         uid,
+        config_path,
+        autostart_path,
+        initial_config,
+        polkit,
     );
 
     // Step 11 (reading the state file and spawning the first probe) is
@@ -240,6 +258,45 @@ async fn spawn_host_watch(conn: &Connection, tx: async_channel::Sender<nopass::e
     });
 }
 
+/// Subscribes to `NameOwnerChanged` for [`POLKIT_AUTHORITY_NAME`] on the
+/// SYSTEM bus and re-runs [`probe_polkit_readiness`] every time it fires,
+/// forwarding the fresh result as `Event::PolkitReadinessChanged` (design
+/// .md §0 D6, task 8.4/8.6) — the same "subscribe, then react on every
+/// signal from a dedicated thread" shape [`spawn_host_watch`] already
+/// uses for the SNI watcher, mirrored here for the system bus instead of
+/// the session bus. A subscription failure is logged and otherwise
+/// harmless: the toggle keeps whatever readiness the startup probe found,
+/// exactly as a late SNI host is merely undetected without
+/// `spawn_host_watch`, never a hard failure.
+fn spawn_polkit_watch(tx: async_channel::Sender<nopass::event::Event>) {
+    std::thread::spawn(move || {
+        futures_lite::future::block_on(async {
+            let Ok(system_conn) = Connection::system().await else {
+                eprintln!("nopass: could not connect to the system bus to watch polkit readiness");
+                return;
+            };
+            let Ok(dbus) = zbus::fdo::DBusProxy::new(&system_conn).await else {
+                eprintln!("nopass: could not build a system DBus proxy to watch polkit readiness");
+                return;
+            };
+            let Ok(mut changes) = dbus.receive_name_owner_changed().await else {
+                eprintln!("nopass: could not subscribe to polkit NameOwnerChanged");
+                return;
+            };
+            while let Some(signal) = changes.next().await {
+                let Ok(args) = signal.args() else { continue };
+                if args.name.as_str() != POLKIT_AUTHORITY_NAME {
+                    continue;
+                }
+                let readiness = probe_polkit_readiness().await;
+                if tx.send(nopass::event::Event::PolkitReadinessChanged(readiness)).await.is_err() {
+                    break;
+                }
+            }
+        });
+    });
+}
+
 /// Forwards `nopass::event::tick()` into `tx` from a dedicated thread —
 /// `event.rs`'s own structural test still holds, since this calls the
 /// crate's one `Timer::interval` call site rather than writing a second
@@ -276,11 +333,11 @@ fn spawn_tray_event_forwarder(
 
 /// The polkit readiness ladder (design.md §0 G3), wired against a real
 /// system bus connection. Never gates startup — `preflight::decide`
-/// never reads `polkit` at all — and its result is currently carried by
-/// `Preflight` for completeness only; see this phase's report for the
-/// open gap (nothing yet consumes `PolkitReadiness::ActionMissing` to
-/// disable the toggle, since no task in this phase specifies where that
-/// wiring belongs).
+/// never reads `polkit` at all. Its result IS consumed now (task 8.4;
+/// verify-report.md H6/G6): `App` stores it, `menu.rs::menu_tree` renders
+/// `ActionMissing` as an insensitive `Unavailable` toggle item through
+/// `preflight::toggle_availability`, and `App::announce_degraded_mode`
+/// posts one startup notification for it.
 async fn probe_polkit_readiness() -> nopass::preflight::PolkitReadiness {
     let Ok(system_conn) = Connection::system().await else {
         return nopass::preflight::PolkitReadiness::Indeterminate("system_bus_unreachable");
@@ -309,14 +366,13 @@ async fn probe_polkit_readiness() -> nopass::preflight::PolkitReadiness {
     )
     .await;
 
-    let enumerate_outcome = match enumerate {
-        Some(actions) => {
-            if actions.iter().any(|a| a.0 == POLKIT_ACTION_ID) {
-                EnumerateOutcome::ActionFound
-            } else {
-                EnumerateOutcome::ActionAbsent
-            }
-        }
+    // task 8.5: the raw response is narrowed to just its action ids and
+    // handed to `preflight::classify_enumeration` — the one place this
+    // mapping is tested against a fake enumeration (verify-report.md
+    // H6/G6's "result is discarded" no longer applies: this IS the
+    // consuming step, not a second, untested copy of it).
+    let enumerate_outcome = match &enumerate {
+        Some(actions) => preflight::classify_enumeration(actions.iter().map(|a| a.0.as_str())),
         None => EnumerateOutcome::ErrorOrTimeout,
     };
 

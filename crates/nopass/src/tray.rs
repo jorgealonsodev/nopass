@@ -63,6 +63,12 @@ impl ViewModel {
 /// nudge.
 pub trait TrayPort {
     fn render(&self, view: &ViewModel);
+    /// Pushes a freshly built menu tree (task 8.7). `App` is the only
+    /// caller in production — `crate::menu::menu_tree` is what every
+    /// implementation must build the real (or recorded) menu from, so a
+    /// fake in tests never needs to re-derive `ksni`/D-Bus specifics to
+    /// prove `App` called this at all.
+    fn render_menu(&self, model: &MenuModel);
     fn reassert(&self);
 }
 
@@ -353,23 +359,6 @@ impl KsniTray {
         let handle = ksni::TrayMethods::spawn(inner).await?;
         Ok((KsniTray { handle }, rx))
     }
-
-    /// Pushes a freshly built menu tree and blocks until `ksni` has applied
-    /// it — the Phase 7 counterpart to [`TrayPort::render`]'s `ViewModel`
-    /// push, computing [`menu_tree`] itself so callers (including this
-    /// module's own tests) never need `ksni` in scope. `model.view` is
-    /// pushed alongside it, the same way [`TrayPort::render`] would, so a
-    /// caller that has just built a [`MenuModel`] never needs a second call
-    /// to keep the icon/tooltip/status line in sync with the menu it came
-    /// from.
-    pub fn render_menu(&self, model: &MenuModel) {
-        let nodes = menu_tree(model);
-        let view = model.view.clone();
-        let _ = futures_lite::future::block_on(self.handle.update(move |inner| {
-            inner.view = view;
-            inner.nodes = nodes;
-        }));
-    }
 }
 
 impl TrayPort for KsniTray {
@@ -387,6 +376,19 @@ impl TrayPort for KsniTray {
     fn render(&self, view: &ViewModel) {
         let view = view.clone();
         let _ = futures_lite::future::block_on(self.handle.update(move |inner| inner.view = view));
+    }
+
+    /// Blocks until `ksni` has applied both the freshly built [`menu_tree`]
+    /// AND `model.view` in the same round trip, so a caller that has just
+    /// built a [`MenuModel`] never needs a second call to keep the
+    /// icon/tooltip/status line in sync with the menu it came from.
+    fn render_menu(&self, model: &MenuModel) {
+        let nodes = menu_tree(model);
+        let view = model.view.clone();
+        let _ = futures_lite::future::block_on(self.handle.update(move |inner| {
+            inner.view = view;
+            inner.nodes = nodes;
+        }));
     }
 
     /// The best re-registration hook `ksni`'s public `Handle` exposes: a

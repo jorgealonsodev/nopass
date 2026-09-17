@@ -217,6 +217,7 @@ mod tests {
     struct NoopTray;
     impl TrayPort for NoopTray {
         fn render(&self, _view: &crate::tray::ViewModel) {}
+        fn render_menu(&self, _model: &crate::menu::MenuModel) {}
         fn reassert(&self) {}
     }
 

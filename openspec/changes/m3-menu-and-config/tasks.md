@@ -312,38 +312,38 @@ menu item exists yet that can construct an `Action::Enable`.
 *(Design §2 `app`/`preflight`, §3 D3 "Paths that cannot show a menu", §0 D6; Spec: activation-consent
 (dispatch), tray-privileged-invocation, privilege-admission (readiness))* — depends on Phase 7.
 
-- [ ] 8.1 Modify `crates/nopass/src/app.rs` — `App` owns `Config`, `ConsentState`, `PolkitReadiness`,
+- [x] 8.1 Modify `crates/nopass/src/app.rs` — `App` owns `Config`, `ConsentState`, `PolkitReadiness`,
       `last_warned_fault: Option<ConfigFault>`; `handle_toggle` routes every activation path through
       `ConsentState::grant()` before constructing `EnableRequest::new(...)`, replacing the hardcoded
       `now + 3600` (`app.rs:328-344`) with `duration` taken from the menu selection or
       `config.default_duration` for a left click.
-- [ ] 8.2 RED (Lane A) `app.rs`: left click, keyboard `Activate`, and the second-instance nudge, fed
+- [x] 8.2 RED (Lane A) `app.rs`: left click, keyboard `Activate`, and the second-instance nudge, fed
       with an unacknowledged `ConsentState`, each post exactly one `Category::Environment`
       notification ("Open the NoPass menu to activate for the first time") and take no privileged
       action (design §3 D3; activation-consent "A non-menu activation path...", "...activation nudge
       never itself dispatches an enable"). GREEN: implement the `grant() == None` branch for non-menu
       callers.
-- [ ] 8.3 RED (Lane A) `app.rs`: `Trigger::MenuOpened` re-reads `config.toml` and `autostart` from
+- [x] 8.3 RED (Lane A) `app.rs`: `Trigger::MenuOpened` re-reads `config.toml` and `autostart` from
       disk; a config fault notifies only on transition (`last_warned_fault`), matching commit
       `29ebe32`'s rule applied to a second surface. GREEN: implement the re-read + transition-only
       warning.
-- [ ] 8.4 Modify `crates/nopass/src/preflight.rs` — D6: `ToggleAvailability { OfferEnable,
+- [x] 8.4 Modify `crates/nopass/src/preflight.rs` — D6: `ToggleAvailability { OfferEnable,
       OfferDisable, Unavailable(UnavailableReason) }`, `UnavailableReason { StateUnknown,
       InstallationIncomplete, ActionInFlight }`; `App` stores the preflight `PolkitReadiness`, posts
       one startup notification on `ActionMissing(reason)`, re-runs the ladder on
       `org.freedesktop.PolicyKit1`'s `NameOwnerChanged`.
-- [ ] 8.5 RED (Lane A) `preflight.rs`: `probe_polkit_readiness`'s `EnumerateActions` result is
+- [x] 8.5 RED (Lane A) `preflight.rs`: `probe_polkit_readiness`'s `EnumerateActions` result is
       consumed — an enumeration missing `com.enfoquestic.nopass.manage` yields `ActionMissing`, never
       assumed-ready (privilege-admission "probe_polkit_readiness consumes the enumeration result").
       GREEN: implement the consuming ladder step (replaces the discarded result, verify-report
       H6/G6).
-- [ ] 8.6 RED (Lane B, `dbus-run-session`): `ActionMissing` renders the toggle
+- [x] 8.6 RED (Lane B, `dbus-run-session`): `ActionMissing` renders the toggle
       `Unavailable(InstallationIncomplete)`, insensitive, with a localized reason label; a later
       `NameOwnerChanged` recovers to `OfferEnable`/`OfferDisable` without a restart. GREEN: wire the
       ladder re-run to `NameOwnerChanged`.
-- [ ] 8.7 Modify `crates/nopass/src/event.rs` — finish `Event`/`TrayEvent` wiring: `DurationSelected`,
+- [x] 8.7 Modify `crates/nopass/src/event.rs` — finish `Event`/`TrayEvent` wiring: `DurationSelected`,
       `ConsentConfirmed{persist}`, `ConsentCancelled`, `DefaultDurationSelected`, `AutostartToggled`.
-- [ ] 8.8 RED (Lane A): threat matrix "External command composition" completion — `EnableRequest`/
+- [x] 8.8 RED (Lane A): threat matrix "External command composition" completion — `EnableRequest`/
       `Action::Enable` argv for all six durations matches `duration::args()` exactly, `pkexec_spec`
       still contains no `sh`/`-c` (tray-privileged-invocation "All six durations render their
       documented argv with no collision"). GREEN: covered by 1.9 + 8.1's wiring; this test pins the

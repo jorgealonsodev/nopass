@@ -97,6 +97,21 @@ impl ConsentState {
         Some((duration, Granted(())))
     }
 
+    /// Re-syncs `acknowledged` from a freshly re-read [`crate::config::
+    /// Config`] (design.md §4 D4 "Re-read at `Trigger::MenuOpened`", task
+    /// 8.3), WITHOUT touching whatever duration may currently be armed and
+    /// pending confirmation. Rebuilding wholesale via
+    /// [`ConsentState::from_config`] on every menu open would silently
+    /// cancel an in-progress consent branch the user has not yet acted on
+    /// — the user arms a duration, the next `MenuOpened` re-read would
+    /// otherwise wipe `pending` before "I understand — activate" is ever
+    /// clicked. Hand-deleting `warning_acknowledged` from `config.toml`
+    /// still re-arms the warning on the next read (the safe direction),
+    /// exactly as design.md §4 D4 specifies.
+    pub fn sync_acknowledged(&mut self, acknowledged: bool) {
+        self.acknowledged = acknowledged;
+    }
+
     /// Cancelling the branch (spec `activation-consent` "Cancelling the
     /// branch grants nothing"): clears the pending duration and changes
     /// nothing else — `acknowledged` is untouched either way.
@@ -264,6 +279,39 @@ mod tests {
         // ...but nothing was persisted, so the NEXT activation is still
         // gated — never a silent grant based on an unpersisted flag.
         assert!(state.grant().is_none(), "a failed write must re-warn rather than silently grant next time");
+    }
+
+    // ---- task 8.3: sync_acknowledged updates acknowledged without
+    // disturbing a pending arm ----
+
+    #[test]
+    fn sync_acknowledged_updates_the_flag_in_both_directions() {
+        let mut state = unacknowledged();
+        assert!(state.grant().is_none());
+
+        state.sync_acknowledged(true);
+        assert!(state.grant().is_some(), "sync_acknowledged(true) must make grant() succeed");
+
+        state.sync_acknowledged(false);
+        assert!(state.grant().is_none(), "sync_acknowledged(false) must re-arm the warning (the safe direction)");
+    }
+
+    #[test]
+    fn sync_acknowledged_never_disturbs_a_pending_arm() {
+        let mut state = unacknowledged();
+        state.arm(GrantDuration::Hours4);
+        assert_eq!(state.branch(), Some(ConsentBranch { pending: GrantDuration::Hours4 }));
+
+        // A config re-read landing between "arm" and "confirm" (e.g. the
+        // user re-opens the menu before clicking "I understand") must not
+        // wipe the pending duration out from under them.
+        state.sync_acknowledged(false);
+
+        assert_eq!(
+            state.branch(),
+            Some(ConsentBranch { pending: GrantDuration::Hours4 }),
+            "a MenuOpened re-read must never cancel an in-progress consent branch"
+        );
     }
 
     // ---- task 3.8 ----

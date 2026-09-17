@@ -394,6 +394,8 @@ fn exported_menu_matches_menu_tree_item_for_item_for_an_active_grant_including_r
             config: Config { default_duration: GrantDuration::Hours4, warning_acknowledged: true },
             consent_branch: None,
             autostart: AutostartState::Enabled,
+            polkit: nopass::preflight::PolkitReadiness::Ready,
+            action_in_flight: false,
         };
         let expected = menu_tree(&model);
 
@@ -453,6 +455,8 @@ fn exported_menu_matches_menu_tree_item_for_item_while_inactive_with_no_active_r
             config: Config { default_duration: GrantDuration::Minutes15, warning_acknowledged: true },
             consent_branch: None,
             autostart: AutostartState::Disabled,
+            polkit: nopass::preflight::PolkitReadiness::Ready,
+            action_in_flight: false,
         };
         let expected = menu_tree(&model);
 
@@ -464,6 +468,57 @@ fn exported_menu_matches_menu_tree_item_for_item_while_inactive_with_no_active_r
 
         let (root, _menu_proxy) = read_full_menu_tree(&destination).await;
         assert_tree_matches(&root.children, &expected);
+    });
+}
+
+/// Task 8.4/8.6: `PolkitReadiness::ActionMissing` replaces the toggle over
+/// the REAL D-Bus wire with one insensitive, localized "Unavailable" item
+/// — matching `menu_tree`'s own output exactly, the same structural proof
+/// the two tests above already give the ordinary toggle. A second render
+/// with `Ready` (what `App::handle_polkit_readiness_changed` pushes after
+/// a `NameOwnerChanged` recovery) restores the ordinary toggle without
+/// tearing down and re-spawning the tray — the "without a restart" half
+/// of the spec's requirement.
+#[test]
+fn exported_menu_reflects_action_missing_polkit_readiness_and_a_later_render_recovers_without_a_restart() {
+    skip_unless_lane_b!("exported_menu_reflects_action_missing_polkit_readiness_and_a_later_render_recovers_without_a_restart");
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    futures_lite::future::block_on(async {
+        let (_watcher_conn, registered) = spawn_fake_watcher().await;
+
+        let mut model = MenuModel {
+            view: ViewModel::from_state("jorge", &TrayState::Inactive, 0),
+            state: TrayState::Inactive,
+            file: FileReading::Absent,
+            now: 0,
+            config: Config { default_duration: GrantDuration::Hour1, warning_acknowledged: true },
+            consent_branch: None,
+            autostart: AutostartState::Disabled,
+            polkit: nopass::preflight::PolkitReadiness::ActionMissing("action_not_registered"),
+            action_in_flight: false,
+        };
+        let expected_unavailable = menu_tree(&model);
+        assert_eq!(expected_unavailable[0].kind, MenuNodeKind::Static, "precondition: row 0 must be the insensitive Unavailable item");
+        assert!(!expected_unavailable[0].enabled);
+
+        let (tray, _events) =
+            KsniTray::spawn(model.view.clone()).await.expect("spawn must succeed with a fake watcher present");
+        let destination = registered.lock().unwrap().last().cloned().expect("watcher must have observed a registration");
+
+        tray.render_menu(&model);
+        let (root, _menu_proxy) = read_full_menu_tree(&destination).await;
+        assert_tree_matches(&root.children, &expected_unavailable);
+
+        // Recovery: the SAME tray, no restart — only a fresh render with
+        // Ready, exactly what `PolkitReadinessChanged` triggers in `App`.
+        model.polkit = nopass::preflight::PolkitReadiness::Ready;
+        let expected_offer = menu_tree(&model);
+        assert_eq!(expected_offer[0].kind, MenuNodeKind::Toggle, "precondition: recovery must restore the ordinary toggle");
+
+        tray.render_menu(&model);
+        let (root_after, _menu_proxy) = read_full_menu_tree(&destination).await;
+        assert_tree_matches(&root_after.children, &expected_offer);
     });
 }
 
@@ -494,6 +549,8 @@ fn exported_menu_reflects_the_consent_branch_and_cancel_raises_consent_cancelled
             config: Config { default_duration: GrantDuration::Hour1, warning_acknowledged: false },
             consent_branch: consent.branch(),
             autostart: AutostartState::Disabled,
+            polkit: nopass::preflight::PolkitReadiness::Ready,
+            action_in_flight: false,
         };
         assert!(model.consent_branch.is_some(), "precondition: a duration must be armed and unacknowledged");
         let expected = menu_tree(&model);
@@ -957,6 +1014,7 @@ struct RecordingTray {
 
 impl TrayPort for RecordingTray {
     fn render(&self, _view: &ViewModel) {}
+    fn render_menu(&self, _model: &MenuModel) {}
     fn reassert(&self) {
         *self.reassert_count.lock().unwrap() += 1;
     }

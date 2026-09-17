@@ -107,6 +107,14 @@ impl ActionGate {
             Err(_) => None,
         }
     }
+
+    /// Whether a `Ticket` issued by this gate is currently alive — a
+    /// read-only query, never itself a gate (task 8.4:
+    /// `UnavailableReason::ActionInFlight`'s source of truth for the
+    /// menu's toggle item).
+    pub fn in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::Acquire)
+    }
 }
 
 impl Default for ActionGate {
@@ -237,6 +245,18 @@ mod tests {
         let ticket = gate.try_begin().expect("first try_begin must succeed");
         drop(ticket);
         assert!(gate.try_begin().is_some(), "dropping the ticket must release the gate");
+    }
+
+    // ---- task 8.4: the in_flight query ActionInFlight is computed from ----
+
+    #[test]
+    fn in_flight_is_false_before_any_ticket_and_true_while_one_is_held() {
+        let gate = ActionGate::new();
+        assert!(!gate.in_flight());
+        let ticket = gate.try_begin().expect("first try_begin must succeed");
+        assert!(gate.in_flight());
+        drop(ticket);
+        assert!(!gate.in_flight(), "dropping the ticket must clear in_flight");
     }
 
     // ---- 5.7: threat-matrix "External command composition" completion,

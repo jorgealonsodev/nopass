@@ -87,6 +87,12 @@ pub fn decide(p: &Preflight) -> StartDecision {
     }
 }
 
+/// The single polkit action id nopass registers (spec `privilege-admission`
+/// "Single Polkit Action"; design.md §0 G3). Defined here, not in `main.rs`,
+/// so both the real `EnumerateActions` glue and this module's own pure
+/// tests share one literal instead of two that could drift apart.
+pub const POLKIT_ACTION_ID: &str = "com.enfoquestic.nopass.manage";
+
 /// Step 2 of the polkit ladder (design.md §0 G3): what `EnumerateActions`
 /// answered, abstracted away from the real D-Bus call so the ladder's
 /// branching is testable against fakes.
@@ -99,6 +105,24 @@ pub enum EnumerateOutcome {
     /// The call errored, was denied, or timed out — the fallback the
     /// proposal asked for: step 3 (the policy-file stat) decides.
     ErrorOrTimeout,
+}
+
+/// Classifies a raw `EnumerateActions` action-id list into an
+/// [`EnumerateOutcome`] (spec `privilege-admission` "probe_polkit_readiness
+/// consumes the enumeration result", task 8.5; verify-report.md H6/G6). A
+/// real `EnumerateActions` round trip returns far more than an id per
+/// action — description, message, vendor, defaults — but this ladder step
+/// only ever asks one question: is [`POLKIT_ACTION_ID`] present at all. The
+/// caller (`main.rs::probe_polkit_readiness`) narrows the real response to
+/// just the ids before calling this, so the mapping itself is testable
+/// against a plain fake list, with no `zbus` type and no real polkit
+/// authority anywhere in this module.
+pub fn classify_enumeration<'a>(action_ids: impl IntoIterator<Item = &'a str>) -> EnumerateOutcome {
+    if action_ids.into_iter().any(|id| id == POLKIT_ACTION_ID) {
+        EnumerateOutcome::ActionFound
+    } else {
+        EnumerateOutcome::ActionAbsent
+    }
 }
 
 /// Step 3 of the ladder: the result of `stat`ing
@@ -150,9 +174,68 @@ pub fn polkit_ladder(
     }
 }
 
+/// design.md §0 D6: why the toggle cannot be clicked right now, if it
+/// cannot. Each reason renders its own insensitive, localized label
+/// (`menu.rs::unavailable_toggle_node`) — replacing
+/// `format::toggle_label -> Option<&'static str>`, which had no way to
+/// carry a reason at all (task 8.4; verify-report.md H6/G6's open gap:
+/// "the user is not left with a dead menu and no reason").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnavailableReason {
+    /// `TrayState::Unknown` — the merged state itself is not yet known.
+    StateUnknown,
+    /// `PolkitReadiness::ActionMissing(_)` — the polkit action is not
+    /// registered, regardless of which of the ladder's three reasons
+    /// produced it (design.md §0 D6 "gains a reason", task 8.6).
+    InstallationIncomplete,
+    /// An [`crate::invoke::ActionGate`] ticket is already held: a
+    /// privileged action this same toggle started is still running.
+    ActionInFlight,
+}
+
+/// design.md §0 D6: what the toggle item renders as. Replaces the old
+/// binary `Option<&'static str>` label with a type that can say WHY the
+/// toggle is unavailable, not merely that it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleAvailability {
+    OfferEnable,
+    OfferDisable,
+    Unavailable(UnavailableReason),
+}
+
+/// The pure decision [`ToggleAvailability`] is computed from (design.md
+/// §0 D6, task 8.4/8.6). `action_in_flight` wins over everything else —
+/// a privileged action already running must never be raced by a second
+/// click regardless of what `polkit`/`state` say. `polkit`'s
+/// [`PolkitReadiness::ActionMissing`] wins over `state` next: an
+/// incomplete installation cannot honour ANY toggle click, enable or
+/// disable. [`PolkitReadiness::Indeterminate`] never disables anything
+/// (M2's rule, unchanged — design.md §8's own "Indeterminate polkit
+/// never changes the decision", applied here to the toggle rather than
+/// `decide`) — it falls straight through to the ordinary state-driven
+/// answer, same as [`PolkitReadiness::Ready`].
+pub fn toggle_availability(
+    state: &crate::reconcile::TrayState,
+    polkit: PolkitReadiness,
+    action_in_flight: bool,
+) -> ToggleAvailability {
+    if action_in_flight {
+        return ToggleAvailability::Unavailable(UnavailableReason::ActionInFlight);
+    }
+    if matches!(polkit, PolkitReadiness::ActionMissing(_)) {
+        return ToggleAvailability::Unavailable(UnavailableReason::InstallationIncomplete);
+    }
+    match state {
+        crate::reconcile::TrayState::Unknown => ToggleAvailability::Unavailable(UnavailableReason::StateUnknown),
+        crate::reconcile::TrayState::Active { .. } => ToggleAvailability::OfferDisable,
+        crate::reconcile::TrayState::Inactive => ToggleAvailability::OfferEnable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reconcile::TrayState;
 
     // ---- 10.2: the 4-row sni_host × notifications table, plus
     // NoSessionBus, plus "Indeterminate polkit never changes the
@@ -262,5 +345,66 @@ mod tests {
             polkit_ladder(true, EnumerateOutcome::ErrorOrTimeout, PolicyFileCheck::Unknown),
             PolkitReadiness::Indeterminate("policy_file_stat_failed")
         );
+    }
+
+    // ---- task 8.5: probe_polkit_readiness's EnumerateActions result is
+    // consumed, via a fake enumeration — spec `privilege-admission`
+    // "probe_polkit_readiness consumes the enumeration result",
+    // verify-report.md H6/G6 ----
+
+    #[test]
+    fn classify_enumeration_finds_the_registered_action() {
+        assert_eq!(
+            classify_enumeration(["some.other.action", POLKIT_ACTION_ID]),
+            EnumerateOutcome::ActionFound
+        );
+    }
+
+    #[test]
+    fn classify_enumeration_of_a_list_missing_the_action_is_action_absent_never_assumed_ready() {
+        assert_eq!(classify_enumeration(["some.other.action"]), EnumerateOutcome::ActionAbsent);
+        assert_eq!(classify_enumeration(std::iter::empty()), EnumerateOutcome::ActionAbsent);
+    }
+
+    // ---- task 8.4/8.6: the toggle availability decision ----
+
+    #[test]
+    fn action_in_flight_wins_over_every_other_input() {
+        for polkit in [PolkitReadiness::Ready, PolkitReadiness::ActionMissing("x"), PolkitReadiness::Indeterminate("x")] {
+            for state in [TrayState::Inactive, TrayState::Active { user: None, expiry: None }, TrayState::Unknown] {
+                assert_eq!(
+                    toggle_availability(&state, polkit, true),
+                    ToggleAvailability::Unavailable(UnavailableReason::ActionInFlight),
+                    "state={state:?} polkit={polkit:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn action_missing_renders_installation_incomplete_regardless_of_its_specific_reason_or_state() {
+        for reason in ["no_authority", "action_not_registered", "policy_file_absent"] {
+            for state in [TrayState::Inactive, TrayState::Active { user: None, expiry: None }] {
+                assert_eq!(
+                    toggle_availability(&state, PolkitReadiness::ActionMissing(reason), false),
+                    ToggleAvailability::Unavailable(UnavailableReason::InstallationIncomplete)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ready_or_indeterminate_polkit_never_disables_the_toggle_state_alone_decides() {
+        for polkit in [PolkitReadiness::Ready, PolkitReadiness::Indeterminate("x")] {
+            assert_eq!(toggle_availability(&TrayState::Inactive, polkit, false), ToggleAvailability::OfferEnable);
+            assert_eq!(
+                toggle_availability(&TrayState::Active { user: None, expiry: None }, polkit, false),
+                ToggleAvailability::OfferDisable
+            );
+            assert_eq!(
+                toggle_availability(&TrayState::Unknown, polkit, false),
+                ToggleAvailability::Unavailable(UnavailableReason::StateUnknown)
+            );
+        }
     }
 }

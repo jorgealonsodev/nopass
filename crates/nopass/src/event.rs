@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use futures_lite::{Stream, StreamExt};
 
+use crate::duration::GrantDuration;
 use crate::outcome::Action;
+use crate::preflight::PolkitReadiness;
 use crate::probe::{Probe, ProbeError};
 use crate::runner::{RunnerError, SpawnOutcome};
 use crate::tray::TrayEvent;
@@ -62,6 +64,30 @@ pub enum Event {
     /// A privileged `pkexec` invocation completed, successfully or not
     /// (design.md §5, §6.2).
     ActionFinished(Action, Result<SpawnOutcome, RunnerError>),
+    /// One entry inside "Activate during…" was clicked (design.md §1 item
+    /// 3.1-3.6; task 8.1). Routed through
+    /// `crate::consent::ConsentState::grant`/`arm` before any invocation —
+    /// never dispatched directly by this variant's mere existence.
+    DurationSelected(GrantDuration),
+    /// The consent branch's "I understand — activate[, and don't warn me
+    /// again]" (design.md §1 "The consent branch"; spec
+    /// `activation-consent` "Confirming the branch grants exactly once").
+    ConsentConfirmed { persist: bool },
+    /// The consent branch's "Cancel" (spec `activation-consent`
+    /// "Cancelling the branch grants nothing").
+    ConsentCancelled,
+    /// A "Default duration" `RadioGroup` entry was selected (design.md §1
+    /// item 7.1; spec `tray-menu` "Selecting a new default moves the
+    /// marker and persists it").
+    DefaultDurationSelected(GrantDuration),
+    /// "Start with session" was toggled (design.md §1 item 8; spec
+    /// `autostart-entry`).
+    AutostartToggled,
+    /// The polkit readiness ladder was re-run after
+    /// `org.freedesktop.PolicyKit1`'s `NameOwnerChanged` fired (design.md
+    /// §0 D6, task 8.4/8.6) — polkitd restarting on a package upgrade must
+    /// recover the toggle without a tray restart.
+    PolkitReadinessChanged(PolkitReadiness),
     /// The menu's `Quit` item, or `AppInterface`/the SNI item requesting
     /// an orderly shutdown.
     Quit,
@@ -77,23 +103,21 @@ impl From<TrayEvent> for Event {
             TrayEvent::ToggleRequested => Event::ToggleRequested,
             TrayEvent::MenuOpened => Event::MenuOpened,
             TrayEvent::Quit => Event::Quit,
-            // m3 Phase 7 (`tray.rs`) adds these `TrayEvent` variants so the
-            // full RF-03 menu can raise duration selection, consent
-            // confirm/cancel, default-duration selection, and the
-            // autostart toggle. Task 8.7 is what finishes this mapping —
-            // adding the matching `Event` variants and routing them
-            // through `app.rs`'s consent/config/autostart wiring. Nothing
-            // before Phase 8 ever constructs an `Event` from one of these:
-            // `app.rs` isn't wired to `menu_tree`/`ConsentState` yet, so
-            // this arm is unreachable until Phase 8 starts routing them,
-            // at which point Phase 8 replaces it.
-            TrayEvent::DurationSelected(_)
-            | TrayEvent::ConsentConfirmed { .. }
-            | TrayEvent::ConsentCancelled
-            | TrayEvent::DefaultDurationSelected(_)
-            | TrayEvent::AutostartToggled => {
-                unreachable!("Phase 8 (task 8.7) wires these TrayEvent variants into Event")
-            }
+            // Task 8.7 finishes the mapping Phase 7 (`tray.rs`) left
+            // partial: the full RF-03 menu's duration selection, consent
+            // confirm/cancel, default-duration selection, and autostart
+            // toggle all reach `app.rs`'s consent/config/autostart wiring
+            // through here now — see `app.rs::handle` for what each one
+            // does. Wiring `render_menu` (task 8.7/8.1) without this
+            // change landing in the same commit would let a real click
+            // reach the arm this match used to end in — an `unreachable!()`
+            // panic (exit 101) on the very first menu interaction; both
+            // land together.
+            TrayEvent::DurationSelected(d) => Event::DurationSelected(d),
+            TrayEvent::ConsentConfirmed { persist } => Event::ConsentConfirmed { persist },
+            TrayEvent::ConsentCancelled => Event::ConsentCancelled,
+            TrayEvent::DefaultDurationSelected(d) => Event::DefaultDurationSelected(d),
+            TrayEvent::AutostartToggled => Event::AutostartToggled,
         }
     }
 }
@@ -121,6 +145,27 @@ mod tests {
     use super::*;
     use futures_lite::future::block_on;
     use std::time::{Duration, Instant};
+
+    // ---- task 8.7: every m3 TrayEvent variant maps to its Event
+    // counterpart — the arm that used to be unreachable!() ----
+
+    #[test]
+    fn every_m3_tray_event_variant_maps_to_its_event_counterpart() {
+        assert!(matches!(
+            Event::from(TrayEvent::DurationSelected(GrantDuration::Hours4)),
+            Event::DurationSelected(GrantDuration::Hours4)
+        ));
+        assert!(matches!(
+            Event::from(TrayEvent::ConsentConfirmed { persist: true }),
+            Event::ConsentConfirmed { persist: true }
+        ));
+        assert!(matches!(Event::from(TrayEvent::ConsentCancelled), Event::ConsentCancelled));
+        assert!(matches!(
+            Event::from(TrayEvent::DefaultDurationSelected(GrantDuration::Hour1)),
+            Event::DefaultDurationSelected(GrantDuration::Hour1)
+        ));
+        assert!(matches!(Event::from(TrayEvent::AutostartToggled), Event::AutostartToggled));
+    }
 
     #[test]
     fn tick_stream_yields_tick_events_periodically() {

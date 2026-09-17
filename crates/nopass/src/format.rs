@@ -129,6 +129,13 @@ pub(crate) enum Msg {
     ConsentConfirmOncePrefix,
     ConsentConfirmPersist,
     ConsentCancel,
+    // ---- Phase 8 (task 8.4/8.6, design.md §0 D6) — the toggle's
+    // "unavailable, with a reason" labels; `StateUnknown` reuses
+    // `Msg::StatusChecking` rather than a fourth arm, since it renders
+    // the exact same "still finding out" idea the status line already
+    // says.
+    ToggleUnavailableInstallationIncomplete,
+    ToggleUnavailableActionInFlight,
 }
 
 impl Msg {
@@ -281,6 +288,14 @@ impl Msg {
             Msg::ConsentCancel => match lang {
                 Lang::En => "Cancel",
                 Lang::Es => "Cancelar",
+            },
+            Msg::ToggleUnavailableInstallationIncomplete => match lang {
+                Lang::En => "Unavailable — installation incomplete",
+                Lang::Es => "No disponible: instalación incompleta",
+            },
+            Msg::ToggleUnavailableActionInFlight => match lang {
+                Lang::En => "Unavailable — an action is already in progress",
+                Lang::Es => "No disponible: ya hay una acción en curso",
             },
         }
     }

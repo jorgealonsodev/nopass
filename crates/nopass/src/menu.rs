@@ -37,6 +37,7 @@ use crate::config::{self, Config};
 use crate::consent::ConsentBranch;
 use crate::duration::GrantDuration;
 use crate::format::{self, Lang, Msg};
+use crate::preflight::{PolkitReadiness, ToggleAvailability, UnavailableReason};
 use crate::reconcile::TrayState;
 use crate::state::FileReading;
 use crate::tray::ViewModel;
@@ -119,6 +120,16 @@ pub struct MenuModel {
     /// Activation Branches the Menu Instead of Granting").
     pub consent_branch: Option<ConsentBranch>,
     pub autostart: AutostartState,
+    /// The preflight polkit readiness `App` currently holds (design.md §0
+    /// D6, task 8.4). Feeds [`crate::preflight::toggle_availability`]
+    /// alongside `state`/`action_in_flight` — never read by anything in
+    /// this module beyond that one call.
+    pub polkit: PolkitReadiness,
+    /// Whether a privileged action `App`'s own [`crate::invoke::
+    /// ActionGate`] is currently holding a ticket for (task 8.4's third
+    /// [`UnavailableReason`]). Read fresh at every build, never cached —
+    /// same discipline as `autostart`/`file`.
+    pub action_in_flight: bool,
 }
 
 /// Builds the full menu tree from `model` (spec `tray-menu` "The full
@@ -140,10 +151,13 @@ pub(crate) fn menu_tree_in(lang: Lang, model: &MenuModel) -> Vec<MenuNode> {
 
     match model.consent_branch {
         Some(branch) => nodes.extend(consent_branch_nodes(lang, branch)),
-        None => {
-            nodes.push(toggle_node(model));
-            nodes.push(activate_during_node(lang));
-        }
+        None => match crate::preflight::toggle_availability(&model.state, model.polkit, model.action_in_flight) {
+            ToggleAvailability::Unavailable(reason) => nodes.push(unavailable_toggle_node(lang, reason)),
+            ToggleAvailability::OfferEnable | ToggleAvailability::OfferDisable => {
+                nodes.push(toggle_node(model));
+                nodes.push(activate_during_node(lang));
+            }
+        },
     }
 
     nodes.push(default_duration_node(lang, model));
@@ -181,6 +195,21 @@ fn toggle_node(model: &MenuModel) -> MenuNode {
         kind: MenuNodeKind::Toggle,
         children: Vec::new(),
     }
+}
+
+/// design.md §0 D6, task 8.4/8.6: replaces BOTH the toggle item and the
+/// "Activate during…" submenu wholesale — an installation that cannot
+/// honour a click cannot honour a specific duration either — with one
+/// insensitive item naming why (spec `privilege-admission`
+/// "probe_polkit_readiness consumes the enumeration result" is what feeds
+/// [`UnavailableReason::InstallationIncomplete`] here).
+fn unavailable_toggle_node(lang: Lang, reason: UnavailableReason) -> MenuNode {
+    let label = match reason {
+        UnavailableReason::StateUnknown => Msg::StatusChecking.text(lang),
+        UnavailableReason::InstallationIncomplete => Msg::ToggleUnavailableInstallationIncomplete.text(lang),
+        UnavailableReason::ActionInFlight => Msg::ToggleUnavailableActionInFlight.text(lang),
+    };
+    MenuNode { label: label.to_string(), enabled: false, checked: None, kind: MenuNodeKind::Static, children: Vec::new() }
 }
 
 fn activate_during_node(lang: Lang) -> MenuNode {
@@ -387,7 +416,17 @@ mod tests {
     }
 
     fn model(state: TrayState, file: FileReading, config: Config, autostart: AutostartState) -> MenuModel {
-        MenuModel { view: view_for(&state), state, file, now: NOW, config, consent_branch: None, autostart }
+        MenuModel {
+            view: view_for(&state),
+            state,
+            file,
+            now: NOW,
+            config,
+            consent_branch: None,
+            autostart,
+            polkit: PolkitReadiness::Ready,
+            action_in_flight: false,
+        }
     }
 
     fn default_config() -> Config {
@@ -678,6 +717,49 @@ mod tests {
         );
 
         drop(runner);
+    }
+
+    // ---- task 8.4/8.6: ActionMissing renders one insensitive
+    // Unavailable(InstallationIncomplete) item, replacing BOTH the toggle
+    // and "Activate during…" ----
+
+    #[test]
+    fn action_missing_polkit_replaces_toggle_and_activate_during_with_one_insensitive_unavailable_item() {
+        let mut m = model(TrayState::Inactive, FileReading::Absent, default_config(), AutostartState::Disabled);
+        m.polkit = PolkitReadiness::ActionMissing("action_not_registered");
+
+        let tree = menu_tree_in(Lang::En, &m);
+
+        assert_eq!(tree.len(), 6, "6 items: 1 Unavailable + Default duration/Current rule/Start with session/About/Quit");
+        assert_eq!(tree[0].kind, MenuNodeKind::Static);
+        assert!(!tree[0].enabled, "the Unavailable item must be insensitive");
+        assert_eq!(tree[0].label, "Unavailable — installation incomplete");
+        assert!(
+            !tree.iter().any(|n| matches!(n.kind, MenuNodeKind::Toggle | MenuNodeKind::ActivateFor(_))),
+            "ActionMissing must replace both the toggle and the duration submenu, not merely disable one"
+        );
+    }
+
+    #[test]
+    fn action_in_flight_replaces_the_toggle_regardless_of_polkit_readiness() {
+        let mut m = model(TrayState::Active { user: None, expiry: None }, FileReading::Absent, default_config(), AutostartState::Disabled);
+        m.action_in_flight = true;
+
+        let tree = menu_tree_in(Lang::En, &m);
+
+        assert_eq!(tree[0].label, "Unavailable — an action is already in progress");
+        assert!(!tree[0].enabled);
+    }
+
+    #[test]
+    fn indeterminate_polkit_never_disables_the_toggle_state_alone_decides() {
+        let mut m = model(TrayState::Inactive, FileReading::Absent, default_config(), AutostartState::Disabled);
+        m.polkit = PolkitReadiness::Indeterminate("system_bus_unreachable");
+
+        let tree = menu_tree_in(Lang::En, &m);
+
+        assert_eq!(tree[0].kind, MenuNodeKind::Toggle, "Indeterminate polkit must never change the toggle's own rendering");
+        assert_eq!(tree[0].label, "Enable passwordless sudo");
     }
 
     #[test]
