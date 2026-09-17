@@ -77,6 +77,23 @@ impl From<TrayEvent> for Event {
             TrayEvent::ToggleRequested => Event::ToggleRequested,
             TrayEvent::MenuOpened => Event::MenuOpened,
             TrayEvent::Quit => Event::Quit,
+            // m3 Phase 7 (`tray.rs`) adds these `TrayEvent` variants so the
+            // full RF-03 menu can raise duration selection, consent
+            // confirm/cancel, default-duration selection, and the
+            // autostart toggle. Task 8.7 is what finishes this mapping —
+            // adding the matching `Event` variants and routing them
+            // through `app.rs`'s consent/config/autostart wiring. Nothing
+            // before Phase 8 ever constructs an `Event` from one of these:
+            // `app.rs` isn't wired to `menu_tree`/`ConsentState` yet, so
+            // this arm is unreachable until Phase 8 starts routing them,
+            // at which point Phase 8 replaces it.
+            TrayEvent::DurationSelected(_)
+            | TrayEvent::ConsentConfirmed { .. }
+            | TrayEvent::ConsentCancelled
+            | TrayEvent::DefaultDurationSelected(_)
+            | TrayEvent::AutostartToggled => {
+                unreachable!("Phase 8 (task 8.7) wires these TrayEvent variants into Event")
+            }
         }
     }
 }

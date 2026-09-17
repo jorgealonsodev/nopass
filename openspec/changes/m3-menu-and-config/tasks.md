@@ -293,11 +293,11 @@ menu item exists yet that can construct an `Action::Enable`.
 
 *(Design §1, §2 `tray`; Spec: tray-menu (bus/keyboard scenarios))* — depends on Phase 6.
 
-- [ ] 7.1 Modify `crates/nopass/src/tray.rs` — `menu()` renders `MenuNode` into `ksni::MenuItem`
+- [x] 7.1 Modify `crates/nopass/src/tray.rs` — `menu()` renders `MenuNode` into `ksni::MenuItem`
       (`SubMenu`, `CheckmarkItem`, `RadioGroup`, `StandardItem{enabled}`); new `TrayEvent` variants for
       duration selection, consent confirm/cancel, default-duration selection, autostart toggle.
       `tray.rs` remains the only module that imports `ksni`.
-- [ ] 7.2 RED (Lane B, `dbus-run-session`): the exported menu over a fake `StatusNotifierWatcher`
+- [x] 7.2 RED (Lane B, `dbus-run-session`): the exported menu over a fake `StatusNotifierWatcher`
       matches `menu.rs`'s tree item-for-item, including `RadioGroup.selected` index and submenu
       nesting (tray-menu "The full item tree is present..." bus half). GREEN: wire `KsniTray::menu()`
       to `menu_tree`.

@@ -19,7 +19,10 @@
 //!
 //! Skipped (this file, and why) when `NOPASS_DBUS_TESTS` is unset:
 //! - `sni_properties_match_the_view_model_for_each_tray_state` (7.4)
-//! - `menu_labels_and_sensitivity_match_the_view_model_and_quit_raises_its_event` (7.5)
+//! - `exported_menu_matches_menu_tree_item_for_item_for_an_active_grant_including_radio_group_and_submenu_nesting`,
+//!   `exported_menu_matches_menu_tree_item_for_item_while_inactive_with_no_active_rule`, and
+//!   `exported_menu_reflects_the_consent_branch_and_cancel_raises_consent_cancelled_over_the_real_wire` (7.2 —
+//!   the full RF-03 tree over the wire, replacing M2's minimal-menu test)
 //! - `activate_over_the_real_sni_wire_raises_toggle_requested` and
 //!   `about_to_show_over_the_real_dbusmenu_wire_raises_menu_opened`
 //!   (verify-report.md G4/F6 — the two `ksni` callbacks Phase 7 never
@@ -37,14 +40,17 @@ use std::time::{Duration, Instant};
 use futures_lite::StreamExt;
 use zbus::zvariant::OwnedValue;
 
+use nopass::autostart::AutostartState;
 use nopass::format::ToolTip as FormatToolTip;
 use nopass::instance::{self, AppInterface, Acquisition, APPLICATION_INTERFACE, OBJECT_PATH, SERVICE_NAME};
+use nopass::menu::{menu_tree, MenuModel, MenuNode, MenuNodeKind};
 use nopass::notifications::{action_notification, already_running_notification, expiry_notification, Category, FreedesktopNotifier, NotifyPort};
 use nopass::config::Config;
 use nopass::consent::ConsentState;
 use nopass::duration::GrantDuration;
 use nopass::outcome::{classify, Action, EnableRequest, OutcomeKind};
 use nopass::reconcile::TrayState;
+use nopass::state::FileReading;
 use nopass::tray::{KsniTray, TrayEvent, TrayPort, ViewModel};
 
 /// Serialises every test in this file — see the module doc for why.
@@ -171,7 +177,45 @@ async fn read_item(destination: &str) -> (String, String, (String, String)) {
     (icon_name, status, tool_tip)
 }
 
-async fn read_menu_children(destination: &str) -> (Vec<(i32, HashMap<String, OwnedValue>)>, MenuProxy<'static>) {
+fn owned_str(value: &OwnedValue) -> String {
+    <String as TryFrom<OwnedValue>>::try_from(value.try_clone().expect("cloneable OwnedValue")).expect("expected a string property value")
+}
+
+fn owned_bool(value: &OwnedValue) -> bool {
+    <bool as TryFrom<OwnedValue>>::try_from(value.try_clone().expect("cloneable OwnedValue")).expect("expected a bool property value")
+}
+
+fn owned_i32(value: &OwnedValue) -> i32 {
+    <i32 as TryFrom<OwnedValue>>::try_from(value.try_clone().expect("cloneable OwnedValue")).expect("expected an i32 property value")
+}
+
+/// One node of the DBusMenu `GetLayout` recursion, decoded into an owned
+/// tree — unlike [`read_menu_children`], this keeps every level, not just
+/// the immediate children, so task 7.2's "submenu nesting correct"
+/// assertion (design.md §9 Lane B) can walk the whole exported tree.
+struct DecodedMenuNode {
+    id: i32,
+    properties: HashMap<String, OwnedValue>,
+    children: Vec<DecodedMenuNode>,
+}
+
+fn decode_menu_node(raw: RawLayout) -> DecodedMenuNode {
+    let (id, properties, raw_children) = raw;
+    let children = raw_children
+        .into_iter()
+        .map(|child| {
+            let value: zbus::zvariant::Value<'static> = child.into();
+            let raw_child: RawLayout = value.downcast().expect("every menu child must decode as (i,a{sv},av)");
+            decode_menu_node(raw_child)
+        })
+        .collect();
+    DecodedMenuNode { id, properties, children }
+}
+
+/// Reads the WHOLE exported menu tree — every level, every property (an
+/// empty filter means "no filter" per `to_dbus_map`) — rather than just
+/// the immediate children [`read_menu_children`] keeps.
+async fn read_full_menu_tree(destination: &str) -> (DecodedMenuNode, MenuProxy<'static>) {
     let client = zbus::Connection::session().await.expect("client must connect to the same bus");
     let proxy = MenuProxy::builder(&client)
         .destination(destination.to_string())
@@ -179,28 +223,68 @@ async fn read_menu_children(destination: &str) -> (Vec<(i32, HashMap<String, Own
         .build()
         .await
         .expect("menu proxy must build against a live DBusMenu object");
-    let (_revision, (_root_id, _root_properties, root_children)) = proxy
-        .get_layout(0, -1, vec!["label", "enabled", "visible"])
-        .await
-        .expect("GetLayout must succeed against a running tray");
-    let children: Vec<(i32, HashMap<String, OwnedValue>)> = root_children
-        .into_iter()
-        .map(|child| {
-            let value: zbus::zvariant::Value<'static> = child.into();
-            let (id, properties, _grandchildren): RawLayout =
-                value.downcast().expect("every menu child must decode as (i,a{sv},av)");
-            (id, properties)
-        })
-        .collect();
-    (children, proxy)
+    let (_revision, root) =
+        proxy.get_layout(0, -1, vec![]).await.expect("GetLayout must succeed against a running tray");
+    (decode_menu_node(root), proxy)
 }
 
-fn owned_str(value: &OwnedValue) -> String {
-    <String as TryFrom<OwnedValue>>::try_from(value.try_clone().expect("cloneable OwnedValue")).expect("expected a string property value")
+/// A "Default duration" `RadioGroup` shell is the one [`MenuNode`] whose
+/// children are [`MenuNodeKind::SelectDefaultDuration`] — see
+/// `tray.rs::static_item`'s own doc comment for why this is the single
+/// detection point, never a second parallel list.
+fn is_radio_group_shell(node: &MenuNode) -> bool {
+    matches!(node.children.first().map(|child| &child.kind), Some(MenuNodeKind::SelectDefaultDuration(_)))
 }
 
-fn owned_bool(value: &OwnedValue) -> bool {
-    <bool as TryFrom<OwnedValue>>::try_from(value.try_clone().expect("cloneable OwnedValue")).expect("expected a bool property value")
+/// Asserts the exported DBusMenu tree matches `menu.rs`'s own [`MenuNode`]
+/// tree item-for-item: label, sensitivity, and nesting at every level,
+/// with the "Default duration" shell asserted as a real DBusMenu radio
+/// group instead of recursing into it as an ordinary submenu.
+fn assert_tree_matches(actual: &[DecodedMenuNode], expected: &[MenuNode]) {
+    assert_eq!(actual.len(), expected.len(), "top-level item count must match menu_tree exactly");
+    for (a, e) in actual.iter().zip(expected.iter()) {
+        assert_node_matches(a, e);
+    }
+}
+
+fn assert_node_matches(actual: &DecodedMenuNode, expected: &MenuNode) {
+    let label = actual.properties.get("label").map(owned_str).unwrap_or_default();
+    assert_eq!(label, expected.label, "label mismatch");
+    assert_eq!(menu_item_enabled(&actual.properties), expected.enabled, "enabled mismatch for {label:?}");
+
+    if is_radio_group_shell(expected) {
+        assert_radio_group_matches(&actual.children, &expected.children, &label);
+        return;
+    }
+
+    assert_eq!(actual.children.len(), expected.children.len(), "child count mismatch under {label:?}");
+    for (a_child, e_child) in actual.children.iter().zip(expected.children.iter()) {
+        assert_node_matches(a_child, e_child);
+    }
+}
+
+/// The wire half of the round-trip invariant `tray.rs`'s own
+/// `radio_group_select_maps_every_index_back_through_grant_duration_all`
+/// pins on the pure-function side: every radio option must carry
+/// `toggle-type: "radio"`, exactly one option's `toggle-state` must be `1`
+/// (selected), and that one must be the `MenuNode` `menu.rs` marked
+/// `checked == Some(true)` — never a second, independently maintained
+/// notion of "current".
+fn assert_radio_group_matches(actual: &[DecodedMenuNode], expected: &[MenuNode], parent_label: &str) {
+    assert_eq!(actual.len(), expected.len(), "radio group option count mismatch under {parent_label:?}");
+    let mut selected_count = 0;
+    for (a, e) in actual.iter().zip(expected.iter()) {
+        let label = a.properties.get("label").map(owned_str).unwrap_or_default();
+        assert_eq!(label, e.label);
+        let toggle_type = a.properties.get("toggle-type").map(owned_str).unwrap_or_default();
+        assert_eq!(toggle_type, "radio", "{label:?} under {parent_label:?} must render as a DBusMenu radio item");
+        let selected = a.properties.get("toggle-state").map(owned_i32).unwrap_or(-1) == 1;
+        assert_eq!(selected, e.checked == Some(true), "{label:?}'s toggle-state must reflect menu_tree's own checked marker");
+        if selected {
+            selected_count += 1;
+        }
+    }
+    assert_eq!(selected_count, 1, "exactly one radio option must be selected under {parent_label:?}");
 }
 
 /// The DBusMenu wire protocol omits a property from `GetLayout`'s map
@@ -259,61 +343,178 @@ async fn assert_view_model_matches(destination: &str, expected: &ViewModel) {
     assert_eq!(read_tooltip, expected.tooltip, "ToolTip title/description must match the ViewModel");
 }
 
-/// Task 7.5: the minimal menu — `Status` insensitive label, toggle item
-/// labelled per `toggle_label` (insensitive with "Checking…" when
-/// `None`), and `Quit` raising its `TrayEvent` (design.md §7.2's
-/// minimal-menu table). Exiting the process with code 0 is `app::run`'s
-/// job (Phase 10, out of scope here) — this proves the item exists, is
-/// activatable, and raises exactly the request `app::run` is expected to
-/// translate into that exit.
+/// Waits up to 2s for the next `TrayEvent`, the same bounded pattern every
+/// wire-click assertion in this file already used inline.
+async fn recv_or_none(events: &async_channel::Receiver<TrayEvent>) -> Option<TrayEvent> {
+    futures_lite::future::or(
+        async { Some(events.recv().await.expect("the events channel must still be open")) },
+        async {
+            async_io::Timer::after(Duration::from_secs(2)).await;
+            None
+        },
+    )
+    .await
+}
+
+/// Task 7.2: the exported DBusMenu tree over a fake `StatusNotifierWatcher`
+/// matches `menu.rs`'s own `menu_tree` item-for-item — label, sensitivity,
+/// and nesting at every level, including the "Default duration"
+/// `RadioGroup`'s `selected` index (tray-menu "The full item tree is
+/// present...", "Both submenus render the same six items...", "The marker
+/// follows the configured default"). Both sides call the SAME
+/// locale-resolving `menu_tree` in the SAME process, so this stays correct
+/// under any `LANG` rather than asserting an English literal (this
+/// crate's own hard-won lesson — `tray.rs`'s `ViewModel::from_state_in`
+/// doc comment).
 #[test]
-fn menu_labels_and_sensitivity_match_the_view_model_and_quit_raises_its_event() {
-    skip_unless_lane_b!("menu_labels_and_sensitivity_match_the_view_model_and_quit_raises_its_event");
+fn exported_menu_matches_menu_tree_item_for_item_for_an_active_grant_including_radio_group_and_submenu_nesting() {
+    skip_unless_lane_b!("exported_menu_matches_menu_tree_item_for_item_for_an_active_grant_including_radio_group_and_submenu_nesting");
     let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     futures_lite::future::block_on(async {
         let (_watcher_conn, registered) = spawn_fake_watcher().await;
 
-        let unknown = ViewModel::from_state("jorge", &TrayState::Unknown, 0);
-        let (tray, events) = KsniTray::spawn(unknown.clone()).await.expect("spawn must succeed with a fake watcher present");
+        const NOW: u64 = 1_000_000;
+        let expiry = nopass_core::expiry::Expiry::At { epoch: NOW + 60 * 42 };
+        let state = TrayState::Active { user: Some("jorge".to_string()), expiry: Some(expiry) };
+        let status = nopass_core::state::HelperStatus {
+            schema: 1,
+            uid: 1000,
+            user: "jorge".to_string(),
+            active: true,
+            expires: Some(expiry),
+            rule_path: "/etc/sudoers.d/90-nopass-1000".to_string(),
+            updated_at: NOW,
+        };
+        let model = MenuModel {
+            view: ViewModel::from_state("jorge", &state, NOW),
+            state,
+            file: FileReading::Parsed(status),
+            now: NOW,
+            config: Config { default_duration: GrantDuration::Hours4, warning_acknowledged: true },
+            consent_branch: None,
+            autostart: AutostartState::Enabled,
+        };
+        let expected = menu_tree(&model);
+
+        let (tray, events) =
+            KsniTray::spawn(model.view.clone()).await.expect("spawn must succeed with a fake watcher present");
         let destination = registered.lock().unwrap().last().cloned().expect("watcher must have observed a registration");
 
-        // ---- Unknown: toggle is insensitive and reads "Checking…". ----
-        let (children, _menu_proxy) = read_menu_children(&destination).await;
-        assert_eq!(children.len(), 4, "root menu must have exactly Status, Separator, toggle, and Quit");
+        tray.render_menu(&model);
 
-        let status_item = &children[0].1;
-        assert_eq!(owned_str(&status_item["label"]), unknown.status_line);
-        assert!(!menu_item_enabled(status_item), "the Status label must always be insensitive");
+        let (root, menu_proxy) = read_full_menu_tree(&destination).await;
+        assert_tree_matches(&root.children, &expected);
 
-        let toggle_item = &children[2].1;
-        assert_eq!(owned_str(&toggle_item["label"]), "Checking…");
-        assert!(!menu_item_enabled(toggle_item), "the toggle must be insensitive while the state is Unknown");
+        // ---- The RadioGroup index round-trips over the REAL wire. ----
+        // `ksni`'s own `menu_flatten` maps a raw clicked item id back to a
+        // local index (`id - offset`) before calling `select` — the pure
+        // `radio_group_item` test in `tray.rs` cannot exercise that
+        // subtraction at all, so only this proves the whole chain (click
+        // -> id -> index -> GrantDuration::ALL[index]) end to end.
+        let default_duration = &root.children[2];
+        // Not an English literal — `assert_tree_matches` above already
+        // proved this node's label matches `menu_tree`'s own output
+        // (`expected[2]`) under whatever `LANG` this process runs under.
+        assert_eq!(default_duration.properties.get("label").map(owned_str).unwrap_or_default(), expected[2].label);
+        let hour1_id = default_duration.children[1].id; // GrantDuration::ALL[1] == Hour1
+        menu_proxy.event(hour1_id, "clicked", OwnedValue::from(0u8), 0).await.expect("Event(SelectDefaultDuration, clicked) must be accepted");
+        assert_eq!(
+            recv_or_none(&events).await,
+            Some(TrayEvent::DefaultDurationSelected(GrantDuration::Hour1)),
+            "clicking the 2nd radio option must raise exactly DefaultDurationSelected(Hour1), not a mis-mapped duration"
+        );
 
-        // ---- Active: toggle becomes sensitive and reads the real label. ----
-        let active = ViewModel::from_state("jorge", &TrayState::Active { user: None, expiry: None }, 0);
-        tray.render(&active);
-        let (children, menu_proxy) = read_menu_children(&destination).await;
-        let toggle_item = &children[2].1;
-        assert_eq!(owned_str(&toggle_item["label"]), active.toggle.unwrap());
-        assert!(menu_item_enabled(toggle_item), "the toggle must be sensitive once a label can be derived");
+        // ---- Quit still raises TrayEvent::Quit over the real wire. ----
+        let quit_id = root.children[6].id;
+        menu_proxy.event(quit_id, "clicked", OwnedValue::from(0u8), 0).await.expect("Event(Quit, clicked) must be accepted");
+        assert_eq!(recv_or_none(&events).await, Some(TrayEvent::Quit), "clicking Quit must raise exactly TrayEvent::Quit");
+    });
+}
 
-        // ---- Quit raises TrayEvent::Quit over the real DBusMenu wire protocol. ----
-        let quit_id = children[3].0;
-        menu_proxy
-            .event(quit_id, "clicked", OwnedValue::from(0u8), 0)
-            .await
-            .expect("Event(Quit, clicked) must be accepted");
+/// Triangulates the structural comparison above against a different
+/// branch: `Inactive`, no coherent file, autostart disabled — exercising
+/// "Current rule"'s single insensitive "No active rule" placeholder and
+/// the unchecked autostart checkbox instead of the four-detail/`Enabled`
+/// paths above.
+#[test]
+fn exported_menu_matches_menu_tree_item_for_item_while_inactive_with_no_active_rule() {
+    skip_unless_lane_b!("exported_menu_matches_menu_tree_item_for_item_while_inactive_with_no_active_rule");
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        let raised = futures_lite::future::or(
-            async { Some(events.recv().await.expect("the events channel must still be open")) },
-            async {
-                async_io::Timer::after(Duration::from_secs(2)).await;
-                None
-            },
-        )
-        .await;
-        assert_eq!(raised, Some(TrayEvent::Quit), "clicking Quit must raise exactly TrayEvent::Quit");
+    futures_lite::future::block_on(async {
+        let (_watcher_conn, registered) = spawn_fake_watcher().await;
+
+        let model = MenuModel {
+            view: ViewModel::from_state("jorge", &TrayState::Inactive, 0),
+            state: TrayState::Inactive,
+            file: FileReading::Absent,
+            now: 0,
+            config: Config { default_duration: GrantDuration::Minutes15, warning_acknowledged: true },
+            consent_branch: None,
+            autostart: AutostartState::Disabled,
+        };
+        let expected = menu_tree(&model);
+
+        let (tray, _events) =
+            KsniTray::spawn(model.view.clone()).await.expect("spawn must succeed with a fake watcher present");
+        let destination = registered.lock().unwrap().last().cloned().expect("watcher must have observed a registration");
+
+        tray.render_menu(&model);
+
+        let (root, _menu_proxy) = read_full_menu_tree(&destination).await;
+        assert_tree_matches(&root.children, &expected);
+    });
+}
+
+/// The consent branch (design.md §1 "The consent branch"; spec
+/// `activation-consent` "First Activation Branches the Menu Instead of
+/// Granting") replaces the exported tree's first two items exactly as it
+/// does bus-free in `menu.rs`, and clicking "Cancel" over the real wire
+/// raises exactly `TrayEvent::ConsentCancelled` — never anything that
+/// could construct an `Action::Enable` (this module's own
+/// `tray_rs_never_imports_the_unconstructible_granted_type_or_the_action_enable_constructor`
+/// pins the structural half of the same guarantee).
+#[test]
+fn exported_menu_reflects_the_consent_branch_and_cancel_raises_consent_cancelled_over_the_real_wire() {
+    skip_unless_lane_b!("exported_menu_reflects_the_consent_branch_and_cancel_raises_consent_cancelled_over_the_real_wire");
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    futures_lite::future::block_on(async {
+        let (_watcher_conn, registered) = spawn_fake_watcher().await;
+
+        let mut consent = ConsentState::from_config(&Config { default_duration: GrantDuration::Hour1, warning_acknowledged: false });
+        consent.arm(GrantDuration::Hours4);
+
+        let model = MenuModel {
+            view: ViewModel::from_state("jorge", &TrayState::Inactive, 0),
+            state: TrayState::Inactive,
+            file: FileReading::Absent,
+            now: 0,
+            config: Config { default_duration: GrantDuration::Hour1, warning_acknowledged: false },
+            consent_branch: consent.branch(),
+            autostart: AutostartState::Disabled,
+        };
+        assert!(model.consent_branch.is_some(), "precondition: a duration must be armed and unacknowledged");
+        let expected = menu_tree(&model);
+        assert_eq!(expected[0].kind, MenuNodeKind::Static, "precondition: row 0 must be the branch's insensitive warning title");
+
+        let (tray, events) =
+            KsniTray::spawn(model.view.clone()).await.expect("spawn must succeed with a fake watcher present");
+        let destination = registered.lock().unwrap().last().cloned().expect("watcher must have observed a registration");
+
+        tray.render_menu(&model);
+
+        let (root, menu_proxy) = read_full_menu_tree(&destination).await;
+        assert_tree_matches(&root.children, &expected);
+
+        let cancel_id = root.children[4].id; // warning title, warning body, confirm-once, confirm-persist, Cancel
+        menu_proxy.event(cancel_id, "clicked", OwnedValue::from(0u8), 0).await.expect("Event(CancelActivate, clicked) must be accepted");
+        assert_eq!(
+            recv_or_none(&events).await,
+            Some(TrayEvent::ConsentCancelled),
+            "clicking Cancel in the consent branch must raise exactly ConsentCancelled"
+        );
     });
 }
 
