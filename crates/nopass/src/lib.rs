@@ -39,9 +39,12 @@
 //! `m3-menu-and-config` Phase 1 adds `atomicfile` and `duration`. Phase 2
 //! adds `config` — the `~/.config/nopass/config.toml` reader/writer
 //! (design.md §4 D4). Phase 3 adds `consent` — the type that makes an
-//! unconsented grant unrepresentable (design.md §3 D3).
+//! unconsented grant unrepresentable (design.md §3 D3). Phase 4 adds
+//! `autostart` — the `~/.config/autostart/nopass.desktop` reader/writer
+//! (design.md §4 D5).
 
 pub mod atomicfile;
+pub mod autostart;
 pub mod config;
 pub mod consent;
 pub mod duration;

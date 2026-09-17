@@ -195,26 +195,26 @@ Phase 6** — the invariant is a type, not a per-caller check, and only exists o
 
 *(Design §4 D5; Spec: autostart-entry (all))* — depends on Phase 1. Parallel-safe with Phases 2, 3, 5.
 
-- [ ] 4.1 Create `crates/nopass/src/autostart.rs` — `enum AutostartState { Enabled, Disabled,
+- [x] 4.1 Create `crates/nopass/src/autostart.rs` — `enum AutostartState { Enabled, Disabled,
       Indeterminate }`, `path()`, `read(p)`, `enable(p)`, `disable(p)`, `const TEMPLATE: &str =
       include_str!("../../../data/nopass.desktop")`.
-- [ ] 4.2 RED (Lane A) `autostart.rs`: path resolves `$XDG_CONFIG_HOME/autostart/nopass.desktop` when
+- [x] 4.2 RED (Lane A) `autostart.rs`: path resolves `$XDG_CONFIG_HOME/autostart/nopass.desktop` when
       set, `~/.config/autostart/nopass.desktop` otherwise (autostart-entry "Autostart Path Honors
       XDG_CONFIG_HOME"). GREEN: implement `path`.
-- [ ] 4.3 RED (Lane A) `autostart.rs`, `TempDir`: `enable` creates a missing `autostart/` directory and
+- [x] 4.3 RED (Lane A) `autostart.rs`, `TempDir`: `enable` creates a missing `autostart/` directory and
       writes bytes byte-equal to `TEMPLATE`; `O_EXCL` refuses a pre-planted symlink at the target
       (autostart-entry "Create Writes the Template Verbatim"; threat matrix "Executable-file
       authoring" — `Exec=` is a compile-time constant, never composed from `config.toml`). GREEN:
       implement `enable` via `atomicfile::write`.
-- [ ] 4.4 RED (Lane A) `autostart.rs`: `disable` unlinks only `nopass.desktop`, leaves a sibling
+- [x] 4.4 RED (Lane A) `autostart.rs`: `disable` unlinks only `nopass.desktop`, leaves a sibling
       `other-app.desktop` untouched, and succeeds when already absent (autostart-entry "Remove Deletes
       Only the NoPass Entry", "Removing an already-absent entry does not error"). GREEN: implement
       `disable`.
-- [ ] 4.5 RED (Lane A) `autostart.rs`: `read` 4-row table — absent ⇒ `Disabled`; `Hidden=true` or
+- [x] 4.5 RED (Lane A) `autostart.rs`: `read` 4-row table — absent ⇒ `Disabled`; `Hidden=true` or
       `X-GNOME-Autostart-enabled=false` present ⇒ `Disabled`; present otherwise ⇒ `Enabled`; other I/O
       error ⇒ `Indeterminate` (autostart-entry "Checkbox State Reflects On-Disk Truth"). GREEN:
       implement `read`.
-- [ ] 4.6 RED (Lane A): `data/nopass.desktop` and the crate's packaging manifest install no file under
+- [x] 4.6 RED (Lane A): `data/nopass.desktop` and the crate's packaging manifest install no file under
       any `autostart/` directory (autostart-entry "Packaging Ships No Autostart Entry By Default").
       GREEN: none — asserts existing packaging state; fails only if M3 accidentally adds one.
 
