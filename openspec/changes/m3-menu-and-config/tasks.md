@@ -133,12 +133,12 @@ working state.
 - [x] 2.3 RED (Lane A) `config.rs`: missing file ⇒ `default_duration=Hour1`,
       `warn_before_activation=true`, without creating the file (user-config "A missing file resolves
       to schema defaults"). GREEN: implement `Absent` handling in `resolve`.
-- [x] 2.4 RED (Lane A) `config.rs`: malformed TOML, non-UTF-8, truncated, unknown key, and an
-      unrecognized `default_duration="3h"` all degrade to defaults plus an observable warning, never
-      refuse to start; an unrecognized `default_duration` preserves a valid `warn_before_activation`
-      in the same document (user-config "Tolerant Parsing Never Blocks Startup"; threat matrix
-      "Config as foreign input"). GREEN: implement per-field tolerant `resolve` over the `toml_edit`
-      DOM.
+- [x] 2.4 RED (Lane A) `config.rs`: malformed TOML, non-UTF-8, and truncated content degrade to
+      defaults plus an observable warning, never refuse to start; an unrecognized `default_duration`
+      or an unknown key degrades that one field to its default silently, no fault or warning, and
+      preserves a valid `warn_before_activation` in the same document (user-config "Tolerant Parsing
+      Never Blocks Startup"; threat matrix "Config as foreign input"). GREEN: implement per-field
+      tolerant `resolve` over the `toml_edit` DOM.
 - [x] 2.5 RED (Lane A) `config.rs`: `write` uses `atomicfile::write` — temp file in the same
       directory, renamed over the target; a write failing after temp-file creation leaves the prior
       file (or its absence) untouched (user-config "Atomic Write"). GREEN: implement `write`.

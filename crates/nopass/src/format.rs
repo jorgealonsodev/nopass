@@ -517,6 +517,86 @@ pub(crate) fn toggle_label_in(lang: Lang, state: &TrayState) -> Option<&'static 
 mod tests {
     use super::*;
 
+    impl Msg {
+        /// The first arm in a hand-picked total order over every `Msg`
+        /// variant — only used to seed [`Msg::next`]'s walk in
+        /// [`Msg::all`]. The order itself carries no meaning.
+        fn first() -> Msg {
+            Msg::NotifyConsentNeededSummary
+        }
+
+        /// The arm that follows `self` in that same order, or `None`
+        /// after the last one. This `match` has **no wildcard arm**: the
+        /// compiler refuses to build this crate's tests if `Msg` gains a
+        /// new variant that is not threaded in here — which is the
+        /// guarantee the previous fixed-length `const ALL: [Msg; 40]`
+        /// array in this test module could not give. That array silently
+        /// stayed "correct" for 40 of the 42 arms `Msg` had grown to by
+        /// Phase 8, and a Spanish string set equal to its English
+        /// original in one of the two missing arms passed
+        /// `cargo test --workspace` clean (WARNING-3, neutering
+        /// experiment F1). `Msg::all()` below can no longer go stale the
+        /// same way: adding a variant without adding it to this `match`
+        /// is a compile error, not a silent gap.
+        fn next(self) -> Option<Msg> {
+            match self {
+                Msg::NotifyConsentNeededSummary => Some(Msg::NotifyConsentNeededBody),
+                Msg::NotifyConsentNeededBody => Some(Msg::NotifyPolkitUnavailableSummary),
+                Msg::NotifyPolkitUnavailableSummary => Some(Msg::NotifyPolkitUnavailableBody),
+                Msg::NotifyPolkitUnavailableBody => Some(Msg::NotifyConfigUnreadableSummary),
+                Msg::NotifyConfigUnreadableSummary => Some(Msg::NotifyConfigUnreadableBody),
+                Msg::NotifyConfigUnreadableBody => Some(Msg::EnablePasswordlessSudo),
+                Msg::EnablePasswordlessSudo => Some(Msg::DisablePasswordlessSudo),
+                Msg::DisablePasswordlessSudo => Some(Msg::StatusActive),
+                Msg::StatusActive => Some(Msg::StatusInactive),
+                Msg::StatusInactive => Some(Msg::StatusChecking),
+                Msg::StatusChecking => Some(Msg::RemainingTimeUnknown),
+                Msg::RemainingTimeUnknown => Some(Msg::NoExpiry),
+                Msg::NoExpiry => Some(Msg::UntilReboot),
+                Msg::UntilReboot => Some(Msg::Expired),
+                Msg::Expired => Some(Msg::LessThanAMinute),
+                Msg::LessThanAMinute => Some(Msg::MinutesSuffix),
+                Msg::MinutesSuffix => Some(Msg::MenuActivateDuring),
+                Msg::MenuActivateDuring => Some(Msg::MenuDefaultDuration),
+                Msg::MenuDefaultDuration => Some(Msg::MenuCurrentRule),
+                Msg::MenuCurrentRule => Some(Msg::MenuNoActiveRule),
+                Msg::MenuNoActiveRule => Some(Msg::MenuRuleDetailsUnavailable),
+                Msg::MenuRuleDetailsUnavailable => Some(Msg::MenuStartWithSession),
+                Msg::MenuStartWithSession => Some(Msg::MenuAbout),
+                Msg::MenuAbout => Some(Msg::MenuQuit),
+                Msg::MenuQuit => Some(Msg::RuleUserPrefix),
+                Msg::RuleUserPrefix => Some(Msg::RulePathPrefix),
+                Msg::RulePathPrefix => Some(Msg::RuleExpiresPrefix),
+                Msg::RuleExpiresPrefix => Some(Msg::RuleRemainingPrefix),
+                Msg::RuleRemainingPrefix => Some(Msg::DurationLabelMinutes15),
+                Msg::DurationLabelMinutes15 => Some(Msg::DurationLabelHour1),
+                Msg::DurationLabelHour1 => Some(Msg::DurationLabelHours4),
+                Msg::DurationLabelHours4 => Some(Msg::DurationLabelHours8),
+                Msg::DurationLabelHours8 => Some(Msg::DurationLabelUntilReboot),
+                Msg::DurationLabelUntilReboot => Some(Msg::DurationLabelPermanent),
+                Msg::DurationLabelPermanent => Some(Msg::ConsentWarningTitle),
+                Msg::ConsentWarningTitle => Some(Msg::ConsentWarningBody),
+                Msg::ConsentWarningBody => Some(Msg::ConsentConfirmOncePrefix),
+                Msg::ConsentConfirmOncePrefix => Some(Msg::ConsentConfirmPersist),
+                Msg::ConsentConfirmPersist => Some(Msg::ConsentCancel),
+                Msg::ConsentCancel => Some(Msg::ToggleUnavailableInstallationIncomplete),
+                Msg::ToggleUnavailableInstallationIncomplete => Some(Msg::ToggleUnavailableActionInFlight),
+                Msg::ToggleUnavailableActionInFlight => None,
+            }
+        }
+
+        /// Every `Msg` arm exactly once, in [`Msg::next`]'s order —
+        /// exhaustive by construction (see `next`'s doc comment), not a
+        /// hand-counted array length that a future arm can silently miss.
+        fn all() -> Vec<Msg> {
+            let mut out = vec![Msg::first()];
+            while let Some(next) = out.last().copied().unwrap().next() {
+                out.push(next);
+            }
+            out
+        }
+    }
+
     fn active(expiry: Option<Expiry>) -> TrayState {
         TrayState::Active { user: Some("jorge".to_string()), expiry }
     }
@@ -715,49 +795,15 @@ mod tests {
 
     #[test]
     fn every_msg_arm_renders_both_languages_and_they_are_distinct() {
-        const ALL: [Msg; 40] = [
-            Msg::NotifyConsentNeededSummary,
-            Msg::NotifyConsentNeededBody,
-            Msg::NotifyPolkitUnavailableSummary,
-            Msg::NotifyPolkitUnavailableBody,
-            Msg::NotifyConfigUnreadableSummary,
-            Msg::NotifyConfigUnreadableBody,
-            Msg::EnablePasswordlessSudo,
-            Msg::DisablePasswordlessSudo,
-            Msg::StatusActive,
-            Msg::StatusInactive,
-            Msg::StatusChecking,
-            Msg::RemainingTimeUnknown,
-            Msg::NoExpiry,
-            Msg::UntilReboot,
-            Msg::Expired,
-            Msg::LessThanAMinute,
-            Msg::MinutesSuffix,
-            Msg::MenuActivateDuring,
-            Msg::MenuDefaultDuration,
-            Msg::MenuCurrentRule,
-            Msg::MenuNoActiveRule,
-            Msg::MenuRuleDetailsUnavailable,
-            Msg::MenuStartWithSession,
-            Msg::MenuAbout,
-            Msg::MenuQuit,
-            Msg::RuleUserPrefix,
-            Msg::RulePathPrefix,
-            Msg::RuleExpiresPrefix,
-            Msg::RuleRemainingPrefix,
-            Msg::DurationLabelMinutes15,
-            Msg::DurationLabelHour1,
-            Msg::DurationLabelHours4,
-            Msg::DurationLabelHours8,
-            Msg::DurationLabelUntilReboot,
-            Msg::DurationLabelPermanent,
-            Msg::ConsentWarningTitle,
-            Msg::ConsentWarningBody,
-            Msg::ConsentConfirmOncePrefix,
-            Msg::ConsentConfirmPersist,
-            Msg::ConsentCancel,
-        ];
-        for msg in ALL {
+        let all = Msg::all();
+        assert_eq!(
+            all.len(),
+            42,
+            "Msg::all() must cover every arm; if this fails after adding/removing a variant, \
+             Msg::next()'s match already forced you to update the chain — update this expected \
+             count to match"
+        );
+        for msg in all {
             let en = msg.text(Lang::En);
             let es = msg.text(Lang::Es);
             assert!(!en.is_empty(), "{msg:?} English text must not be empty");

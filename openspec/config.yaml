@@ -82,6 +82,7 @@ rules:
       - "scripts/run-lane-root.sh"
       - "scripts/run-lane-journal.sh"
       - "scripts/run-lane-polkit.sh"
+      - "scripts/run-lane-b.sh"
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas

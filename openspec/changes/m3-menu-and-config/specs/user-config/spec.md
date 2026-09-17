@@ -44,32 +44,52 @@ config file that does not exist MUST resolve to these defaults without being cre
 
 ### Requirement: Tolerant Parsing Never Blocks Startup
 
-Malformed TOML or an unrecognized field/value MUST degrade to the schema defaults plus a
-logged/observable warning; it MUST NOT cause the tray to refuse to start.
+A config file MUST degrade in one of two ways, and the two are not the same:
+
+- A file that cannot be read, is not valid UTF-8, or does not parse as TOML syntax at all
+  (a faulted reading) MUST degrade to the schema defaults plus a logged/observable warning.
+- A file that IS syntactically valid TOML but carries an unrecognized value for a known field
+  (e.g. a `default_duration` outside the six documented values) or an unknown key MUST degrade
+  that one field to its schema default, on its own, without discarding any other valid field
+  from the same document, and MUST NOT raise a fault or a warning: a syntactically valid
+  document with one bad field is ordinary per-field tolerance, not an error condition worth
+  interrupting the user for on every menu open.
+
+Neither case MUST cause the tray to refuse to start.
 
 #### Scenario: Malformed TOML degrades to defaults with a warning
-- GIVEN the config file contains invalid TOML
-- WHEN the tray loads config at startup
+- GIVEN the config file contains invalid TOML (or is not valid UTF-8, or cannot be read)
+- WHEN the tray loads config
 - THEN loading returns the schema defaults, an observable warning is produced, and startup
   proceeds
 - Testable via: `cargo test`
 
-#### Scenario: An unrecognized default_duration value degrades to the default
-- GIVEN `default_duration = "3h"` (not one of the six documented values)
+#### Scenario: An unrecognized default_duration value falls back silently
+- GIVEN `default_duration = "3h"` (not one of the six documented values), in an otherwise
+  syntactically valid document that also sets `warn_before_activation`
 - WHEN the config is loaded
-- THEN `default_duration` resolves to `1h` and a warning is produced
+- THEN `default_duration` resolves to `1h`, the sibling `warn_before_activation` value from the
+  same document is preserved, and no fault or warning is raised
 - Testable via: `cargo test`
 
-### Requirement: Read At Startup, Written On Menu Selection
+### Requirement: Read At Startup And At Every Menu Open, Written On Menu Selection
 
-The config MUST be read exactly once at startup and written whenever the user selects a new
-default duration or confirms "don't warn again"; no other event MUST write it.
+The config MUST be read at startup and re-read from disk at every menu open, so a user who
+edits `config.toml` while the tray is running does not need to restart it; it MUST be written
+whenever the user selects a new default duration or confirms "don't warn again", and no other
+event MUST write it.
 
 #### Scenario: Selecting a new default duration writes the file
 - GIVEN the tray is running with `default_duration = 1h`
 - WHEN the user selects "8 h" from the "Default duration" submenu
 - THEN the config file is rewritten with `default_duration = 8h`
 - Testable via: `cargo test` (temp `XDG_CONFIG_HOME`)
+
+#### Scenario: Editing the file while the tray is running is picked up on the next menu open
+- GIVEN the tray is running with `default_duration = 1h`, read at startup
+- WHEN the user hand-edits `config.toml` to `default_duration = 8h` and then opens the menu
+- THEN the menu reflects `default_duration = 8h`, without restarting the tray
+- Testable via: `cargo test` (`app.rs::menu_opened_re_reads_config_from_disk`)
 
 ### Requirement: Atomic Write
 
