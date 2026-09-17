@@ -274,6 +274,108 @@ pkexec /usr/libexec/nopass-helper disable
   exists solely to refresh the tooltip" (`Testable via: … real desktop
   session for the measured idle CPU`).
 
+### 12. Full-tree keyboard navigation (M3 menu)
+
+Item 7 above proved the minimal M2 menu is keyboard-reachable. M3 grew the
+tree — two duration submenus, an insensitive "Current rule" section, an
+autostart checkbox, and the first-activation consent branch — and every
+new node needs the same proof; a submenu opening under the mouse but not
+under `Right`/`Enter` would pass item 7 and still fail this one.
+
+- **Do**: without touching the mouse at any point, use your desktop's
+  panel-focus key to reach the tray icon and open its menu with the
+  keyboard. Navigate into and out of "Activate during…" and reach each of
+  its six duration entries (15 min / 1 h / 4 h / 8 h / until reboot /
+  permanent). Do the same for "Default duration" and its six entries.
+  Reach "Current rule" and its detail rows. Reach and toggle "Start with
+  session". With consent unrecorded (fresh `config.toml`, or
+  `warning_acknowledged` unset), activate the toggle item with the
+  keyboard to bring up the first-activation branch, then navigate to and
+  read each of its three items ("I understand — activate for…", "I
+  understand — activate and don't warn me again", "Cancel") — activate
+  "Cancel" to leave without granting. Finally reopen the menu and select
+  Quit, all with the keyboard.
+- **Pass**: every item and submenu entry named above is reachable and
+  activatable using only the keyboard — no step requires a pointer
+  click, hover, or drag. Each item's focus/selection state (including the
+  `RadioGroup`'s current-duration marker) is visible while focused. No
+  submenu or the consent branch silently fails to open under keyboard
+  navigation even though it opens under the mouse.
+- Spec: `tray-menu`, "Every item exposes standard keyboard-navigation
+  properties"; task 7.3.
+
+### 13. First activation is observed exactly once, never re-presented
+
+- **Do**: start from a fresh or edited `config.toml` with consent
+  unrecorded (`warn_before_activation` true, i.e. `warning_acknowledged`
+  false). Activate passwordless sudo for the first time from the tray
+  menu and watch for the two-step confirmation branch (the warning text,
+  then "I understand — activate and don't warn me again"). Select that
+  item. Once the grant completes, disable passwordless sudo, then
+  activate a second time.
+- **Pass**: the confirmation branch is presented exactly once, on the
+  first activation — and no privileged invocation happens until "I
+  understand — activate…" is explicitly selected on that first
+  presentation. The second activation dispatches directly, with the
+  branch never re-presented.
+- Spec: `activation-consent`, "Confirming the branch grants exactly
+  once", "A later activation skips the branch once consent is recorded".
+
+### 14. Autostart entry survives a real logout and login
+
+- **Do**: from the tray menu, enable "Start with session" (Spanish:
+  "Iniciar con la sesión") and confirm
+  `~/.config/autostart/nopass.desktop` now exists. Fully log out of the
+  desktop session and log back in — not merely lock/unlock the screen or
+  restart the tray process.
+- **Pass**: the NoPass tray icon appears automatically after login,
+  without manually launching `nopass`. Then disable "Start with session"
+  from the menu, confirm the file is gone, and repeat a full logout/login
+  — this time the icon does **not** appear on its own.
+- Spec: `autostart-entry`, "A fresh install has no autostart entry" —
+  Lane C half (real logout/login).
+
+### 15. Spanish rendering — menu and notifications
+
+Six notification strings (the first-activation consent nudge, the
+polkit-unavailable toast, and the config-unreadable warning — summary and
+body of each) were moved into the same catalogue the menu already uses
+after a review found them hardcoded in English; this step exists to prove
+that fix on a real desktop, not just under `cargo test`. Checking only the
+menu would miss exactly the regression this item was added for.
+
+- **Do**: run the tray with `LANG=es_ES.UTF-8` (and `LC_ALL`/`LC_MESSAGES`
+  unset, so `LANG` is what resolves — see `localization` spec's
+  resolution order). Open the menu and read every item: the toggle
+  ("Activar sudo sin contraseña" / "Desactivar sudo sin contraseña"),
+  "Activar durante…" and its six entries, "Duración predeterminada",
+  "Regla actual", "Iniciar con la sesión", "Acerca de", "Salir". With
+  consent unrecorded, trigger the first-activation branch and read its
+  text ("⚠ Lee esto antes de activar", the risk statement, "Entendido:
+  activar durante <d>", "Entendido: activar y no volver a advertirme",
+  "Cancelar"). Then trigger and read each notification you can reasonably
+  reproduce: the first-activation consent nudge (if triggered from a
+  non-menu path per `activation-consent`), a successful enable, a
+  successful disable, and — if reproducible in your environment — the
+  polkit-unavailable toast (rename/move the installed `.policy` file
+  temporarily) and the config-unreadable warning (temporarily corrupt
+  `config.toml`).
+- **Pass**: every menu item and submenu entry above renders in Spanish,
+  matching the text quoted above exactly. The first-activation branch
+  renders in Spanish. Every notification you triggered — summary and
+  body — renders in Spanish, with no literal `{}` placeholder and no
+  English string anywhere in the menu, tooltip, or notification text.
+  **Known, out-of-scope gap — not a failure of this item**: four
+  environment/degraded-mode notifications inherited from M2 ("No tray
+  host found", "No notification service found", "Could not watch for
+  changes", "Lost the change watch") are not yet in the catalogue and
+  will still read in English; record if you observe one, but do not mark
+  this item Fail solely for those four.
+- Spec: `localization`, "A Spanish locale changes format.rs output
+  without touching callers"; `activation-consent`; commit
+  `d078207` ("move the notification text into the catalogue it belongs
+  to").
+
 ## Result table
 
 Fill in once per run. One row per checklist item above; use the exact
@@ -307,6 +409,10 @@ a result).
 | 9 | Probe does not destroy cached sudo credentials | | |
 | 10 | `pkaction` enumerable unprivileged | | |
 | 11 | Idle RSS < 30 MB, idle CPU ≈ 0 over ≥ 1 h | | |
+| 12 | Full-tree keyboard navigation (M3 menu) | | |
+| 13 | First activation observed exactly once, never re-presented | | |
+| 14 | Autostart entry survives a real logout/login | | |
+| 15 | Spanish rendering — menu and notifications | | |
 
 ## Next step
 

@@ -434,7 +434,7 @@ machine has `docker` 29.8.0, not `podman`** — detect the runtime, do not hardc
 
 *(Proposal Out of Scope; design §7 Lane C row; house-style carry-forward)*
 
-- [ ] 11.1 Modify `tests/manual/README.md` — add M3 Lane C items: full-tree keyboard navigation
+- [x] 11.1 Modify `tests/manual/README.md` — add M3 Lane C items: full-tree keyboard navigation
       (7.3); first activation observed **once** on a real desktop, never re-presented after "don't
       warn again"; autostart entry surviving a real logout/login (autostart-entry "A fresh install has
       no autostart entry", Lane C half); Spanish rendering under `LANG=es_ES.UTF-8` for menu and
@@ -449,5 +449,5 @@ machine has `docker` 29.8.0, not `podman`** — detect the runtime, do not hardc
 - [ ] 11.4 Carry forward, unchecked — `tests/containers/Containerfile.systemd` has never run end to
       end (no rootful privileged podman on this machine); it stays out of scope for M3 and is not a
       dependency of Phase 10's `Containerfile.polkit`, which needs no systemd-as-PID-1.
-- [ ] 11.5 Modify `docs/PRD_NoPass_Linux.md` — mark RF-02/RF-03/RF-06/RF-09 as delivered if the
+- [x] 11.5 Modify `docs/PRD_NoPass_Linux.md` — mark RF-02/RF-03/RF-06/RF-09 as delivered if the
       document carries per-requirement status markers; read the file first and skip if it does not.
