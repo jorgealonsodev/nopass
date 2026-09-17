@@ -935,15 +935,52 @@ mod tests {
 
     #[test]
     fn toggle_while_inactive_enables_and_a_second_toggle_in_flight_is_ignored() {
-        // `ScriptedRunner` asserts exact spec equality per invocation, and
-        // the enable spec's `--until` argument is `now() + 3600` — not
-        // observable before calling `handle_toggle` — so this test uses a
-        // permissive fake runner that accepts any spec instead (see
-        // `AnyCommandRunner` below).
-        let runner: Arc<dyn CommandRunner> = Arc::new(AnyCommandRunner::new(vec![
-            Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] }),
-            Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] }),
-        ]));
+        // Previously this test raced its own SUT: `spawn_action` runs the
+        // enable action on a dedicated OS thread and drops its `Ticket`
+        // (releasing `ActionGate`) the instant `runner.run()` returns —
+        // and a plain in-memory fake runner (`AnyCommandRunner`) returns
+        // near-instantly, with no subprocess to wait on. So there was no
+        // guarantee the background thread hadn't already finished and
+        // released the gate before this test's own second, synchronous
+        // `handle_toggle()` call reached `try_begin()` — at that point the
+        // second toggle legitimately re-acquires the (already-released)
+        // gate and dispatches a genuine second action, which this test's
+        // own assertions then fail against. Measured: `cargo test -p
+        // nopass --lib toggle_while_inactive` failed 6/20 runs. `ActionGate`
+        // itself is correct (see `invoke.rs`'s
+        // `second_try_begin_while_one_is_in_flight_returns_none`, which
+        // pins the same invariant single-threaded and never flakes) — the
+        // bug is this test's missing synchronization, not production code.
+        //
+        // The fix is real synchronization, not a sleep or a widened
+        // timeout (either only narrows the window, never closes it):
+        // `SyncingCommandRunner` below signals `started` the instant its
+        // FIRST `run()` call is entered, then blocks until the test
+        // explicitly releases it — so the test can WAIT to know the
+        // `Ticket` is still held, rather than guess from timing. Every
+        // call after the first returns its scripted result immediately:
+        // `handle_action_finished` forces a `Trigger::ActionCompleted`
+        // probe (design.md D5/§5.1) that runs on this SAME shared
+        // `runner`, and a runner that blocked on every call would starve
+        // that forced probe's thread forever — the orphaned-thread/
+        // poisoned-mutex failure mode a previous phase already hit here
+        // (a test that scripted the enable spec but not the forced probe).
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let runner: Arc<dyn CommandRunner> = Arc::new(SyncingCommandRunner {
+            started: started_tx,
+            release: Mutex::new(release_rx),
+            first: std::sync::atomic::AtomicBool::new(true),
+            results: Mutex::new(
+                vec![
+                    // The enable action's own result.
+                    Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] }),
+                    // The forced post-action probe's result.
+                    Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] }),
+                ]
+                .into(),
+            ),
+        });
         let tray = Arc::new(RecordingTray::default());
         let notify = Arc::new(RecordingNotify::default());
         let mut app = test_app(runner, tray, notify.clone(), Mode::Full);
@@ -951,9 +988,18 @@ mod tests {
 
         app.current_state = TrayState::Inactive;
         app.handle_toggle(now());
-        // The gate is held: a second click while the first is in flight
-        // must be ignored (design.md §4.4).
+
+        // Block until the spawned action thread has actually entered
+        // `runner.run()` — the `Ticket` `spawn_action` holds cannot have
+        // been dropped yet, because `run()` has not yet returned.
+        started_rx.recv_timeout(SHORT).expect("the first action's runner.run() must have started");
+
+        // The gate is deterministically still held here: a second click
+        // while the first is in flight must be ignored (design.md §4.4).
         app.handle_toggle(now());
+
+        // Only now let the first action's `runner.run()` return.
+        release_tx.send(()).expect("SyncingCommandRunner must still be blocked waiting on release");
 
         match recv_and_handle(&mut app, SHORT) {
             Some(HandledEvent::ActionFinishedEnableOk) => {}
@@ -992,6 +1038,37 @@ mod tests {
             self.results.lock().unwrap().pop_front().unwrap_or(Err(RunnerError::Spawn {
                 program: "test".to_string(),
                 reason: "AnyCommandRunner script exhausted".to_string(),
+            }))
+        }
+    }
+
+    /// A `CommandRunner` used only by
+    /// `toggle_while_inactive_enables_and_a_second_toggle_in_flight_is_ignored`
+    /// to close a genuine race in that test (see its own comment): the
+    /// FIRST call to `run()` signals `started`, then blocks until the
+    /// test sends on `release` — giving the test a deterministic way to
+    /// know the calling thread's `Ticket` is still held, instead of
+    /// racing it. Every call after the first (the forced post-action
+    /// probe, design.md D5/§5.1) skips the block entirely and returns its
+    /// next scripted result immediately, exactly like `AnyCommandRunner`.
+    struct SyncingCommandRunner {
+        started: std::sync::mpsc::Sender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+        first: std::sync::atomic::AtomicBool,
+        results: Mutex<std::collections::VecDeque<Result<SpawnOutcome, RunnerError>>>,
+    }
+    impl CommandRunner for SyncingCommandRunner {
+        fn run(&self, _spec: &CommandSpec) -> Result<SpawnOutcome, RunnerError> {
+            if self.first.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                let _ = self.started.send(());
+                // Ignore a broken/missing sender: a stray extra call in a
+                // future regression should still return a scripted result
+                // (or the exhaustion error) rather than hang forever.
+                let _ = self.release.lock().unwrap().recv();
+            }
+            self.results.lock().unwrap().pop_front().unwrap_or(Err(RunnerError::Spawn {
+                program: "test".to_string(),
+                reason: "SyncingCommandRunner script exhausted".to_string(),
             }))
         }
     }

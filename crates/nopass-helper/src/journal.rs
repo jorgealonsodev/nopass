@@ -49,6 +49,29 @@ pub const FIELD_PREFIX: &str = "NOPASS";
 /// side effect of testing something else entirely. Tests that
 /// deliberately want the real journald write-and-read-back path
 /// (`tests/root_journal.rs`'s own container lane) must never set this.
+///
+/// **Never reachable in a release build.** This constant — and the
+/// `init()` branch that checks it — is compiled only `#[cfg(debug_
+/// assertions)]`: `cargo build --release`/`cargo deb` both build with
+/// `debug-assertions = false` (the workspace's `[profile.release]`
+/// carries no override, so that is cargo's own default), and every test
+/// lane that needs this opt-out (`process_boundary.rs`'s own doc
+/// comment, this module's own `#[cfg(test)]` tests) runs through `cargo
+/// test`, which always builds the `test`/`dev` profile — `debug-
+/// assertions = true` — regardless of which lane script invokes it (see
+/// `scripts/run-lane-root.sh`, `run-lane-journal.sh`, `run-lane-polkit.sh`,
+/// all of which run `cargo test`, never `cargo build --release`). The
+/// one Containerfile that DOES build `--release`
+/// (`tests/containers/Containerfile.systemd`) is explicitly documented
+/// as "NOT part of `cargo test --workspace` and never run by CI" — a
+/// manual, human-observed lane, not a gate this opt-out needs to survive
+/// in. Without the `#[cfg]`, a root-owning operator could run
+/// `sudo NOPASS_HELPER_TEST_DISABLE_JOURNALD=1 nopass-helper grant
+/// --uid N --until-reboot` against the shipped binary and grant
+/// passwordless sudo with no audit record at all — not a privilege
+/// escalation (they already had sudo), but a silent erasure of the one
+/// record that exists to prove it happened.
+#[cfg(debug_assertions)]
 pub const DISABLE_JOURNALD_ENV: &str = "NOPASS_HELPER_TEST_DISABLE_JOURNALD";
 
 /// Configures the global `tracing` subscriber: a `tracing-journald`
@@ -60,13 +83,19 @@ pub const DISABLE_JOURNALD_ENV: &str = "NOPASS_HELPER_TEST_DISABLE_JOURNALD";
 /// or multiple tests in the same process) is a harmless no-op instead of
 /// a panic; the configuration is otherwise identical.
 pub fn init() {
+    // `#[cfg(debug_assertions)]`: this opt-out — constant AND check —
+    // does not exist at all in a release build. See
+    // `DISABLE_JOURNALD_ENV`'s own doc comment for why that cfg is safe
+    // for every test lane that needs it, and why it must never be
+    // reachable from the shipped binary.
+    #[cfg(debug_assertions)]
     if std::env::var(DISABLE_JOURNALD_ENV).is_ok() {
-        // See `DISABLE_JOURNALD_ENV`'s own doc comment: an explicit,
-        // test-only opt-out, never reachable from a real pkexec/systemd
-        // invocation. Falls back to the exact same stderr layer `init`
-        // already uses when no journald socket is reachable at all —
-        // logging still never fails an operation, it is just never
-        // routed to the REAL host journal for this one process.
+        // An explicit, test-only opt-out, never reachable from a real
+        // pkexec/systemd invocation. Falls back to the exact same
+        // stderr layer `init` already uses when no journald socket is
+        // reachable at all — logging still never fails an operation,
+        // it is just never routed to the REAL host journal for this
+        // one process.
         let _ = tracing_subscriber::registry()
             .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
             .try_init();
