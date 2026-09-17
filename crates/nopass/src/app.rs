@@ -232,11 +232,8 @@ impl App {
         if let PolkitReadiness::ActionMissing(reason) = self.polkit {
             self.notify.post(
                 Category::Environment,
-                "Passwordless sudo is not available",
-                &format!(
-                    "NoPass could not confirm its polkit action is installed ({reason}). Enabling \
-                     and disabling passwordless sudo will stay unavailable until this is fixed."
-                ),
+                format::Msg::NotifyPolkitUnavailableSummary.text(format::lang()),
+                &format::Msg::NotifyPolkitUnavailableBody.text(format::lang()).replace("{}", reason),
             );
         }
     }
@@ -431,8 +428,17 @@ impl App {
     /// not duplicated per caller") posts while consent is unrecorded
     /// (design.md §3 D3 "Paths that cannot show a menu"; spec
     /// `activation-consent` "No Grant Dispatch Without Recorded Consent").
-    const UNCONSENTED_TOGGLE_SUMMARY: &'static str = "Activation needs your consent first";
-    const UNCONSENTED_TOGGLE_BODY: &'static str = "Open the NoPass menu to activate for the first time";
+    // These were raw English constants. `format.rs` opens by promising that
+    // every user-facing string the tray renders lives there, and this is the
+    // most important message in the whole change: it is what a user sees the
+    // first time the tray refuses to grant. Showing it in English to a
+    // Spanish user, while the menu beside it speaks Spanish, defeats it.
+    fn unconsented_toggle_summary() -> String {
+        format::Msg::NotifyConsentNeededSummary.text(format::lang()).to_string()
+    }
+    fn unconsented_toggle_body() -> String {
+        format::Msg::NotifyConsentNeededBody.text(format::lang()).to_string()
+    }
 
     /// design.md §3 D3/§1's single gate every activation-requesting caller
     /// converges on (task 8.1). `Event::ToggleRequested` is shared by the
@@ -461,7 +467,7 @@ impl App {
                     // `Event::DurationSelected` carries). No invocation is
                     // ever made; the ticket is released immediately.
                     drop(ticket);
-                    self.notify.post(Category::Environment, Self::UNCONSENTED_TOGGLE_SUMMARY, Self::UNCONSENTED_TOGGLE_BODY);
+                    self.notify.post(Category::Environment, &Self::unconsented_toggle_summary(), &Self::unconsented_toggle_body());
                 }
             },
             TrayState::Active { .. } => self.spawn_action(Action::Disable, ticket),
@@ -598,8 +604,8 @@ impl App {
                 self.last_warned_fault = Some(current);
                 self.notify.post(
                     Category::Environment,
-                    "Could not read the configuration file",
-                    "NoPass could not read config.toml; using the default settings until the file is fixed.",
+                    format::Msg::NotifyConfigUnreadableSummary.text(format::lang()),
+                    format::Msg::NotifyConfigUnreadableBody.text(format::lang()),
                 );
             }
             Some(_) => {}
@@ -1028,7 +1034,7 @@ mod tests {
         let posts = notify.posts.lock().unwrap();
         assert_eq!(posts.len(), 1, "exactly one notification, got {posts:?}");
         assert_eq!(posts[0].0, Category::Environment);
-        assert_eq!(posts[0].2, "Open the NoPass menu to activate for the first time");
+        assert_eq!(posts[0].2, format::Msg::NotifyConsentNeededBody.text(format::lang()));
     }
 
     #[test]
@@ -1348,7 +1354,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(c, s, _)| *c == Category::Environment && s == "Could not read the configuration file")
+            .filter(|(c, s, _)| *c == Category::Environment && s == format::Msg::NotifyConfigUnreadableSummary.text(format::lang()))
             .count();
         assert_eq!(warnings, 1, "a config fault that stays faulted across many menu opens must warn exactly once");
 
@@ -1365,7 +1371,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(c, s, _)| *c == Category::Environment && s == "Could not read the configuration file")
+            .filter(|(c, s, _)| *c == Category::Environment && s == format::Msg::NotifyConfigUnreadableSummary.text(format::lang()))
             .count();
         assert_eq!(warnings_after_recovery, 2, "a fault after a healthy read in between must notify again");
     }
@@ -1440,6 +1446,33 @@ mod tests {
         let posts = notify.posts.lock().unwrap();
         assert_eq!(posts.len(), 1);
         assert_eq!(posts[0].0, Category::Environment);
+        assert!(
+            posts[0].2.contains("action_not_registered"),
+            "the posted body must include the readiness reason: {:?}",
+            posts[0].2
+        );
+        assert!(
+            !posts[0].2.contains("{}"),
+            "the posted body must not ship a literal, unfilled placeholder: {:?}",
+            posts[0].2
+        );
+    }
+
+    // The App-level test above posts through whatever `format::lang()`
+    // resolves from the real process environment, so it cannot pin a
+    // specific language. This test calls the exact same interpolation
+    // `announce_degraded_mode` performs — `Msg::text(lang).replace("{}",
+    // reason)` — with both languages named explicitly, so a Spanish arm
+    // that dropped the reason or shipped a literal `{}` fails here even
+    // under this machine's es_ES.UTF-8 locale.
+    #[test]
+    fn notify_polkit_unavailable_body_interpolates_the_reason_in_both_languages() {
+        let reason = "action_not_registered";
+        for lang in [format::Lang::En, format::Lang::Es] {
+            let body = format::Msg::NotifyPolkitUnavailableBody.text(lang).replace("{}", reason);
+            assert!(body.contains(reason), "{lang:?} body must include the reason: {body:?}");
+            assert!(!body.contains("{}"), "{lang:?} body must not leave a literal placeholder: {body:?}");
+        }
     }
 
     // ---- 10.4/§5.1: escalation wiring ----

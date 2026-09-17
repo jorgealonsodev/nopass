@@ -89,6 +89,17 @@ impl Lang {
 /// does not compile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Msg {
+    // Notification text. `app.rs` declared these as raw English constants,
+    // which contradicted this module's own opening promise that every
+    // user-facing string lives here — and meant that under a Spanish
+    // locale the menu, tooltip and toggle spoke Spanish while the
+    // first-activation nudge and the polkit toast spoke English.
+    NotifyConsentNeededSummary,
+    NotifyConsentNeededBody,
+    NotifyPolkitUnavailableSummary,
+    NotifyPolkitUnavailableBody,
+    NotifyConfigUnreadableSummary,
+    NotifyConfigUnreadableBody,
     EnablePasswordlessSudo,
     DisablePasswordlessSudo,
     StatusActive,
@@ -219,6 +230,34 @@ impl Msg {
             Msg::MenuAbout => match lang {
                 Lang::En => "About",
                 Lang::Es => "Acerca de",
+            },
+            Msg::NotifyConsentNeededSummary => match lang {
+                Lang::En => "Activation needs your consent first",
+                Lang::Es => "La activación necesita tu consentimiento",
+            },
+            Msg::NotifyConsentNeededBody => match lang {
+                Lang::En => "Open the NoPass menu to activate for the first time",
+                Lang::Es => "Abre el menú de NoPass para activarlo por primera vez",
+            },
+            Msg::NotifyPolkitUnavailableSummary => match lang {
+                Lang::En => "Passwordless sudo is not available",
+                Lang::Es => "sudo sin contraseña no está disponible",
+            },
+            // `{}` is the readiness reason, filled at the call site.
+            Msg::NotifyPolkitUnavailableBody => match lang {
+                Lang::En => "NoPass could not confirm its polkit action is installed ({}). Enabling \
+                             and disabling passwordless sudo will stay unavailable until this is fixed.",
+                Lang::Es => "NoPass no pudo confirmar que su acción de polkit esté instalada ({}). \
+                             Activar y desactivar sudo sin contraseña seguirá sin estar disponible \
+                             hasta que se corrija.",
+            },
+            Msg::NotifyConfigUnreadableSummary => match lang {
+                Lang::En => "Could not read the configuration file",
+                Lang::Es => "No se pudo leer el fichero de configuración",
+            },
+            Msg::NotifyConfigUnreadableBody => match lang {
+                Lang::En => "NoPass could not read config.toml; using the default settings until the file is fixed.",
+                Lang::Es => "NoPass no pudo leer config.toml; se usarán los ajustes por defecto hasta que se corrija.",
             },
             Msg::MenuQuit => match lang {
                 Lang::En => "Quit",
@@ -676,7 +715,13 @@ mod tests {
 
     #[test]
     fn every_msg_arm_renders_both_languages_and_they_are_distinct() {
-        const ALL: [Msg; 34] = [
+        const ALL: [Msg; 40] = [
+            Msg::NotifyConsentNeededSummary,
+            Msg::NotifyConsentNeededBody,
+            Msg::NotifyPolkitUnavailableSummary,
+            Msg::NotifyPolkitUnavailableBody,
+            Msg::NotifyConfigUnreadableSummary,
+            Msg::NotifyConfigUnreadableBody,
             Msg::EnablePasswordlessSudo,
             Msg::DisablePasswordlessSudo,
             Msg::StatusActive,
