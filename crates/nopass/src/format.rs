@@ -100,10 +100,43 @@ pub(crate) enum Msg {
     Expired,
     LessThanAMinute,
     MinutesSuffix,
+    // ---- Phase 6 (menu.rs) — top-level menu item labels ----
+    MenuActivateDuring,
+    MenuDefaultDuration,
+    MenuCurrentRule,
+    MenuNoActiveRule,
+    MenuRuleDetailsUnavailable,
+    MenuStartWithSession,
+    MenuAbout,
+    MenuQuit,
+    // ---- Phase 6 — "Current rule" detail-item prefixes ----
+    RuleUserPrefix,
+    RulePathPrefix,
+    RuleExpiresPrefix,
+    RuleRemainingPrefix,
+    // ---- Phase 6 — duration display labels (menu.rs's "Activate during…"
+    // and "Default duration" submenus; distinct from the countdown-context
+    // Msg::UntilReboot above) ----
+    DurationLabelMinutes15,
+    DurationLabelHour1,
+    DurationLabelHours4,
+    DurationLabelHours8,
+    DurationLabelUntilReboot,
+    DurationLabelPermanent,
+    // ---- Phase 6 — the consent branch (design.md §1 "The consent branch") ----
+    ConsentWarningTitle,
+    ConsentWarningBody,
+    ConsentConfirmOncePrefix,
+    ConsentConfirmPersist,
+    ConsentCancel,
 }
 
 impl Msg {
-    fn text(self, lang: Lang) -> &'static str {
+    /// `pub(crate)`, not private: `menu.rs` (Phase 6) renders its own
+    /// labels through this same catalogue rather than duplicating a
+    /// second `Lang`-aware table — "every user-visible label goes
+    /// through `Msg`" applies crate-wide, not just within this module.
+    pub(crate) fn text(self, lang: Lang) -> &'static str {
         match self {
             Msg::EnablePasswordlessSudo => match lang {
                 Lang::En => "Enable passwordless sudo",
@@ -151,6 +184,103 @@ impl Msg {
                 // convention for an abbreviation — also what keeps this
                 // arm's rendered pair distinct from English's "min".
                 Lang::Es => "min.",
+            },
+            Msg::MenuActivateDuring => match lang {
+                Lang::En => "Activate during…",
+                Lang::Es => "Activar durante…",
+            },
+            Msg::MenuDefaultDuration => match lang {
+                Lang::En => "Default duration",
+                Lang::Es => "Duración predeterminada",
+            },
+            Msg::MenuCurrentRule => match lang {
+                Lang::En => "Current rule",
+                Lang::Es => "Regla actual",
+            },
+            Msg::MenuNoActiveRule => match lang {
+                Lang::En => "No active rule",
+                Lang::Es => "Sin regla activa",
+            },
+            Msg::MenuRuleDetailsUnavailable => match lang {
+                Lang::En => "Rule details unavailable — the state file could not be read",
+                Lang::Es => "Detalles de la regla no disponibles: no se pudo leer el archivo de estado",
+            },
+            Msg::MenuStartWithSession => match lang {
+                Lang::En => "Start with session",
+                Lang::Es => "Iniciar con la sesión",
+            },
+            Msg::MenuAbout => match lang {
+                Lang::En => "About",
+                Lang::Es => "Acerca de",
+            },
+            Msg::MenuQuit => match lang {
+                Lang::En => "Quit",
+                Lang::Es => "Salir",
+            },
+            Msg::RuleUserPrefix => match lang {
+                Lang::En => "User",
+                Lang::Es => "Usuario",
+            },
+            Msg::RulePathPrefix => match lang {
+                Lang::En => "Rule",
+                Lang::Es => "Regla",
+            },
+            Msg::RuleExpiresPrefix => match lang {
+                Lang::En => "Expires",
+                Lang::Es => "Caduca",
+            },
+            Msg::RuleRemainingPrefix => match lang {
+                Lang::En => "Remaining",
+                Lang::Es => "Restante",
+            },
+            Msg::DurationLabelMinutes15 => match lang {
+                Lang::En => "15 minutes",
+                Lang::Es => "15 minutos",
+            },
+            Msg::DurationLabelHour1 => match lang {
+                Lang::En => "1 hour",
+                Lang::Es => "1 hora",
+            },
+            Msg::DurationLabelHours4 => match lang {
+                Lang::En => "4 hours",
+                Lang::Es => "4 horas",
+            },
+            Msg::DurationLabelHours8 => match lang {
+                Lang::En => "8 hours",
+                Lang::Es => "8 horas",
+            },
+            Msg::DurationLabelUntilReboot => match lang {
+                Lang::En => "Until reboot",
+                Lang::Es => "Hasta el reinicio",
+            },
+            Msg::DurationLabelPermanent => match lang {
+                Lang::En => "Permanently",
+                Lang::Es => "Permanentemente",
+            },
+            Msg::ConsentWarningTitle => match lang {
+                Lang::En => "⚠ Read this before activating",
+                Lang::Es => "⚠ Lee esto antes de activar",
+            },
+            Msg::ConsentWarningBody => match lang {
+                Lang::En => {
+                    "Any program running as you can become root without a password until this expires."
+                }
+                Lang::Es => {
+                    "Cualquier programa que se ejecute como tú podrá convertirse en root sin contraseña \
+                     hasta que esto caduque."
+                }
+            },
+            Msg::ConsentConfirmOncePrefix => match lang {
+                Lang::En => "I understand — activate for",
+                Lang::Es => "Entendido: activar durante",
+            },
+            Msg::ConsentConfirmPersist => match lang {
+                Lang::En => "I understand — activate and don't warn me again",
+                Lang::Es => "Entendido: activar y no volver a advertirme",
+            },
+            Msg::ConsentCancel => match lang {
+                Lang::En => "Cancel",
+                Lang::Es => "Cancelar",
             },
         }
     }
@@ -531,7 +661,7 @@ mod tests {
 
     #[test]
     fn every_msg_arm_renders_both_languages_and_they_are_distinct() {
-        const ALL: [Msg; 11] = [
+        const ALL: [Msg; 34] = [
             Msg::EnablePasswordlessSudo,
             Msg::DisablePasswordlessSudo,
             Msg::StatusActive,
@@ -543,6 +673,29 @@ mod tests {
             Msg::Expired,
             Msg::LessThanAMinute,
             Msg::MinutesSuffix,
+            Msg::MenuActivateDuring,
+            Msg::MenuDefaultDuration,
+            Msg::MenuCurrentRule,
+            Msg::MenuNoActiveRule,
+            Msg::MenuRuleDetailsUnavailable,
+            Msg::MenuStartWithSession,
+            Msg::MenuAbout,
+            Msg::MenuQuit,
+            Msg::RuleUserPrefix,
+            Msg::RulePathPrefix,
+            Msg::RuleExpiresPrefix,
+            Msg::RuleRemainingPrefix,
+            Msg::DurationLabelMinutes15,
+            Msg::DurationLabelHour1,
+            Msg::DurationLabelHours4,
+            Msg::DurationLabelHours8,
+            Msg::DurationLabelUntilReboot,
+            Msg::DurationLabelPermanent,
+            Msg::ConsentWarningTitle,
+            Msg::ConsentWarningBody,
+            Msg::ConsentConfirmOncePrefix,
+            Msg::ConsentConfirmPersist,
+            Msg::ConsentCancel,
         ];
         for msg in ALL {
             let en = msg.text(Lang::En);

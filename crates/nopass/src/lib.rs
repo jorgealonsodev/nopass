@@ -57,6 +57,7 @@ pub mod watch;
 pub mod outcome;
 pub mod invoke;
 pub mod format;
+pub mod menu;
 pub mod tray;
 pub mod notifications;
 pub mod instance;

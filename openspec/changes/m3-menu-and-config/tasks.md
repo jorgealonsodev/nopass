@@ -257,32 +257,32 @@ unchanged. Parallel-safe with Phases 2, 3, 4.
 *(Design §1, §2 `tray`; Spec: tray-menu (all))* — depends on Phases 1–5, **especially Phase 3**: no
 menu item exists yet that can construct an `Action::Enable`.
 
-- [ ] 6.1 Create `crates/nopass/src/menu.rs` — bus-free `MenuNode { label, enabled, checked, kind,
+- [x] 6.1 Create `crates/nopass/src/menu.rs` — bus-free `MenuNode { label, enabled, checked, kind,
       children }`, `MenuModel` (extends M2's `ViewModel` with config/consent/autostart/availability),
       `menu_tree(&MenuModel) -> Vec<MenuNode>` — pure function, no `ksni` import.
-- [ ] 6.2 RED (Lane A) `menu.rs`: the full item tree in order — toggle, "Activate during…", "Default
+- [x] 6.2 RED (Lane A) `menu.rs`: the full item tree in order — toggle, "Activate during…", "Default
       duration", "Current rule", "Start with session", "About", "Quit" — for any merged state other
       than `Unknown` (tray-menu "The full item tree is present in the exported menu"). GREEN:
       implement the top-level `menu_tree` skeleton.
-- [ ] 6.3 RED (Lane A) `menu.rs`: "Activate during…" and "Default duration" each render exactly the
+- [x] 6.3 RED (Lane A) `menu.rs`: "Activate during…" and "Default duration" each render exactly the
       six durations, same fixed order, sourced from `GrantDuration::ALL` — the array 1.10 pinned as
       the single ordering source (tray-menu "Both submenus render the same six items in the same
       order"). GREEN: implement both submenus from `ALL`.
-- [ ] 6.4 RED (Lane A) `menu.rs`: "Default duration" marks exactly the entry matching
+- [x] 6.4 RED (Lane A) `menu.rs`: "Default duration" marks exactly the entry matching
       `config.default_duration`; selecting a different entry moves the marker on the next build and
       persists via `config::write` (tray-menu "The marker follows the configured default", "Selecting
       a new default moves the marker and persists it"). GREEN: implement the marker + write-through.
-- [ ] 6.5 RED (Lane A) `menu.rs`: "Current rule" renders insensitive items (path, user, expiry,
+- [x] 6.5 RED (Lane A) `menu.rs`: "Current rule" renders insensitive items (path, user, expiry,
       remaining) for an active grant, one insensitive "No active rule" item when inactive, and an
       insensitive "Rule details unavailable" item when the probe says active but the state file is
       `Absent`/`Faulted` (tray-menu "Current Rule Renders As Insensitive Reference Items"; resolves
       the proposal's "view current rule" open risk). GREEN: implement the submenu from `status`.
-- [ ] 6.6 RED (Lane A) `menu.rs`: "Start with session" checked state comes from `autostart::read(disk)`
+- [x] 6.6 RED (Lane A) `menu.rs`: "Start with session" checked state comes from `autostart::read(disk)`
       at every build, never cached; checking it invokes `autostart::enable` and the next build shows
       it checked (tray-menu "Start-With-Session Checkbox Toggles the Autostart Entry"; autostart-entry
       "An externally deleted entry is reflected on the next menu build"). GREEN: wire the checkbox to
       `autostart`.
-- [ ] 6.7 RED (Lane A) `menu.rs`: the first unconsented "Activate for ⟨d⟩" replaces rows 3–4 with the
+- [x] 6.7 RED (Lane A) `menu.rs`: the first unconsented "Activate for ⟨d⟩" replaces rows 3–4 with the
       two-step branch (warning, "I understand — activate", "I understand — activate and don't warn me
       again", "Cancel") and dispatches **nothing** (activation-consent "First Activation Branches the
       Menu Instead of Granting"). GREEN: implement `ConsentState::branch()` rendering.
