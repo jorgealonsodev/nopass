@@ -31,12 +31,26 @@ impl ViewModel {
     /// `attention` mirrors design.md §7.1's `Status` column: only
     /// `Unknown` sets `NeedsAttention`.
     pub fn from_state(user: &str, state: &TrayState, now: u64) -> ViewModel {
+        ViewModel::from_state_in(format::lang(), user, state, now)
+    }
+
+    /// The same view model with the language named rather than read from
+    /// the process environment.
+    ///
+    /// `from_state` above resolves the language from `LC_ALL`/`LC_MESSAGES`/
+    /// `LANG`, which is right in production and wrong in a test: a test that
+    /// asserts an exact string through `from_state` passes or fails
+    /// depending on the developer's locale. Four tests in this crate did
+    /// exactly that and went green for two milestones, because nobody had
+    /// run them on a Spanish machine until `LANG=es_ES.UTF-8` met the
+    /// localization phase. They assert through here now.
+    pub(crate) fn from_state_in(lang: format::Lang, user: &str, state: &TrayState, now: u64) -> ViewModel {
         ViewModel {
             icon: format::icon_name(state),
             attention: matches!(state, TrayState::Unknown),
-            tooltip: format::tooltip(user, state, now),
-            status_line: format::status_line(user, state, now),
-            toggle: format::toggle_label(state),
+            tooltip: format::tooltip_in(lang, user, state, now),
+            status_line: format::status_line_in(lang, user, state, now),
+            toggle: format::toggle_label_in(lang, state),
         }
     }
 }
@@ -206,7 +220,7 @@ mod tests {
 
     #[test]
     fn view_model_for_inactive_matches_format_output_exactly() {
-        let v = ViewModel::from_state("jorge", &TrayState::Inactive, NOW);
+        let v = ViewModel::from_state_in(format::Lang::En, "jorge", &TrayState::Inactive, NOW);
         assert_eq!(v.icon, format::icon_name(&TrayState::Inactive));
         assert!(!v.attention);
         assert_eq!(v.status_line, "jorge — Inactive");
@@ -216,7 +230,7 @@ mod tests {
     #[test]
     fn view_model_for_active_timed_matches_format_output_exactly() {
         let state = TrayState::Active { user: Some("jorge".to_string()), expiry: Some(Expiry::At { epoch: NOW + 60 }) };
-        let v = ViewModel::from_state("jorge", &state, NOW);
+        let v = ViewModel::from_state_in(format::Lang::En, "jorge", &state, NOW);
         assert_eq!(v.icon, "nopass-unlocked-timed-symbolic");
         assert!(!v.attention);
         assert_eq!(v.status_line, "jorge — Active (1 min)");
@@ -225,7 +239,7 @@ mod tests {
 
     #[test]
     fn view_model_for_unknown_requests_attention_and_disables_the_toggle() {
-        let v = ViewModel::from_state("jorge", &TrayState::Unknown, NOW);
+        let v = ViewModel::from_state_in(format::Lang::En, "jorge", &TrayState::Unknown, NOW);
         assert_eq!(v.icon, "dialog-question-symbolic");
         assert!(v.attention, "Unknown must request attention (design.md D6)");
         assert_eq!(v.toggle, None);

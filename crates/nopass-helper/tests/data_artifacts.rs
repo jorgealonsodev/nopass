@@ -115,3 +115,21 @@ fn tmpfiles_creates_run_nopass_directory() {
         "tmpfiles.conf must contain the line: d /run/nopass 0755 root root -"
     );
 }
+
+/// localization "The installed policy carries a Spanish description and
+/// message": polkit resolves the authentication dialog's own locale itself
+/// from the `xml:lang` variants an action declares — this repository MUST
+/// NOT reimplement that resolution, only supply the Spanish text for
+/// polkit's own mechanism to find.
+#[test]
+fn policy_declares_spanish_description_and_message() {
+    let policy = data_file("com.enfoquestic.nopass.policy");
+    assert!(
+        policy.contains(r#"<description xml:lang="es">"#),
+        "missing <description xml:lang=\"es\"> variant"
+    );
+    assert!(
+        policy.contains(r#"<message xml:lang="es">"#),
+        "missing <message xml:lang=\"es\"> variant"
+    );
+}

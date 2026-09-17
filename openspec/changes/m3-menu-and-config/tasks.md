@@ -225,27 +225,27 @@ Phase 6** — the invariant is a type, not a per-caller check, and only exists o
 *(Design §0 D2; Spec: localization (all))* — rewrites `format.rs`'s body only; public signatures
 unchanged. Parallel-safe with Phases 2, 3, 4.
 
-- [ ] 5.1 Modify `crates/nopass/src/format.rs` — replace the body with `enum Lang { En, Es }`,
+- [x] 5.1 Modify `crates/nopass/src/format.rs` — replace the body with `enum Lang { En, Es }`,
       `Lang::from_env`, `from_locale_string`, `enum Msg` (one arm per user-facing string, both
       languages required to compile), `Msg::text(self, lang)`, process-wide `OnceLock<Lang>` `lang()`,
       and `_in`-suffixed testable variants of every existing public fn. No call site outside
       `format.rs` changes.
-- [ ] 5.2 RED (Lane A) `format.rs`: `Lang::from_locale_string` table — `LC_ALL` > `LC_MESSAGES` >
+- [x] 5.2 RED (Lane A) `format.rs`: `Lang::from_locale_string` table — `LC_ALL` > `LC_MESSAGES` >
       `LANG`, first non-empty Spanish wins; `LC_ALL=en_US` beats `LC_MESSAGES=es_ES`; all-unset ⇒
       English (localization "LC_ALL takes precedence...", "No locale variable set resolves to
       English"). GREEN: implement `from_env`/`from_locale_string`.
-- [ ] 5.3 RED (Lane A) `format.rs`: every `Msg` arm renders both languages, and the rendered pair is
+- [x] 5.3 RED (Lane A) `format.rs`: every `Msg` arm renders both languages, and the rendered pair is
       distinct per arm (M2's existing distinctness rule, extended). GREEN: implement the `Msg` table
       — an arm omitting `Es` fails to compile by construction.
-- [ ] 5.4 RED (Lane A) `format.rs`: `status_line`, `tooltip`, `toggle_label` (`_in` variants) return
+- [x] 5.4 RED (Lane A) `format.rs`: `status_line`, `tooltip`, `toggle_label` (`_in` variants) return
       Spanish text under `Lang::Es` with the same call signature as English; no caller in `tray.rs`/
       `app.rs` changes (localization "A Spanish locale changes format.rs output without touching
       callers"). GREEN: covered by 5.1–5.3.
-- [ ] 5.5 RED (Lane A) `crates/nopass-core`: `render_rule`'s header output is byte-identical to its
+- [x] 5.5 RED (Lane A) `crates/nopass-core`: `render_rule`'s header output is byte-identical to its
       pinned constant under a Spanish process locale (test harness env, not `set_var`) —
       `nopass_core::{header, template}` accept no locale input (localization "The rendered header is
       byte-identical under a Spanish locale"). GREEN: none — pins existing structural isolation.
-- [ ] 5.6 RED (Lane A): `data/com.enfoquestic.nopass.policy` XML fixture parse asserts an
+- [x] 5.6 RED (Lane A): `data/com.enfoquestic.nopass.policy` XML fixture parse asserts an
       `xml:lang="es"` variant of `<description>` and `<message>` (localization "The installed policy
       carries a Spanish description and message"). GREEN: modify `data/com.enfoquestic.nopass.policy`
       to add the `es` variants (content-only, not a gate).

@@ -1211,7 +1211,26 @@ mod tests {
 
         let renders = tray.renders.lock().unwrap();
         assert_eq!(renders.len(), 1, "the Unknown -> Active transition must push exactly one render");
-        assert_eq!(renders[0].toggle, Some("Disable passwordless sudo"), "the pushed ViewModel must reflect the new Active state");
+        // Compared against the live renderer for an Active state, NOT
+        // against an English literal. What this pins is the wiring — that
+        // the pushed view model is the Active one rather than the Unknown
+        // one it replaced — and that property holds in every locale. The
+        // literal form asserted here for two milestones and only ever ran
+        // on English machines; it broke the moment the localization phase
+        // met a developer whose LANG is es_ES.UTF-8. The exact English
+        // text is pinned where it belongs, in format.rs's own tests,
+        // through the explicit-language seam.
+        let expected_active = TrayState::Active { user: Some("jorge".to_string()), expiry: None };
+        assert_eq!(
+            renders[0].toggle,
+            crate::format::toggle_label(&expected_active),
+            "the pushed ViewModel must reflect the new Active state"
+        );
+        assert_ne!(
+            renders[0].toggle,
+            crate::format::toggle_label(&TrayState::Unknown),
+            "and must not still be the Unknown view model"
+        );
     }
 
     // ---- G3/Fix 4 (verify-report.md): the expiry-notification trigger,
