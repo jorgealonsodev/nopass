@@ -794,7 +794,7 @@ fn successful_action_and_detected_expiry_each_produce_a_delivered_notification()
 
         let captured = calls.lock().unwrap().clone();
         assert_eq!(captured.len(), 2, "one delivery per category: {captured:?}");
-        assert_eq!(captured[0].summary, "Passwordless sudo enabled");
+        assert_eq!(captured[0].summary, granted.text(nopass::format::Lang::from_env()).0);
         assert!(captured[0].body.contains("1 hour"));
         assert_eq!(captured[1].summary, "Passwordless sudo expired");
         assert_ne!(captured[0].body, captured[1].body, "the two notifications must never share a body");
@@ -918,7 +918,7 @@ fn visudo_rejected_and_a_hostile_username_never_leak_untrusted_text_into_the_del
 
         let captured = calls.lock().unwrap().clone();
         assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0].body, OutcomeKind::VisudoRejected.text().1);
+        assert_eq!(captured[0].body, OutcomeKind::VisudoRejected.text(nopass::format::Lang::from_env()).1);
         assert!(!captured[0].body.to_lowercase().contains("syntax error"), "must never contain helper stderr text");
 
         for markup_char in ['<', '>', '(', ')', '/'] {

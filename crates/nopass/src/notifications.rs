@@ -24,6 +24,7 @@ use std::sync::Mutex;
 
 use notify_rust::{Notification, NotificationHandle, Urgency};
 
+use crate::format::{self, Lang, Msg};
 use crate::outcome::OutcomeKind;
 
 /// The `NoPass` application name every notification is shown under.
@@ -73,9 +74,19 @@ impl Category {
 /// outcome renders only its constant text regardless of what the helper's
 /// stderr said.
 pub fn action_notification(kind: OutcomeKind, countdown: &str) -> (String, String) {
-    let (summary, body) = kind.text();
+    action_notification_in(format::lang(), kind, countdown)
+}
+
+/// [`action_notification`]'s implementation, parameterised by an explicit
+/// [`Lang`] — the same seam `format.rs`'s own `_in`-suffixed functions use
+/// to exercise both languages deterministically without needing
+/// `std::env::set_var` (forbidden by this crate's `#![forbid(unsafe_code)]`).
+pub(crate) fn action_notification_in(lang: Lang, kind: OutcomeKind, countdown: &str) -> (String, String) {
+    let (summary, body) = kind.text(lang);
     match kind {
-        OutcomeKind::Granted { .. } => (summary, format!("{body} Expires: {countdown}.")),
+        OutcomeKind::Granted { .. } => {
+            (summary, format!("{body} {}", Msg::OutcomeGrantedExpiresSuffix.text(lang).replace("{}", countdown)))
+        }
         _ => (summary, body),
     }
 }
@@ -195,19 +206,42 @@ mod tests {
 
     #[test]
     fn granted_appends_the_countdown_to_the_constant_body() {
+        // `action_notification_in(Lang::En, ...)`, not the public
+        // `action_notification`, which reads the real process locale —
+        // this box's own env resolves Spanish (`LANG=es_ES.UTF-8`), so
+        // asserting an English literal against the public function's
+        // output would fail here for reasons unrelated to what this test
+        // actually pins (localization "never assert an English literal
+        // against anything resolving language from the environment").
         let action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000, granted_for_test()));
         let kind = classify(action, Some(0), true);
-        let (summary, body) = action_notification(kind, "42 min");
+        let (summary, body) = action_notification_in(Lang::En, kind, "42 min");
         assert_eq!(summary, "Passwordless sudo enabled");
         assert!(body.contains("42 min"), "body must carry the countdown: {body:?}");
-        assert!(body.starts_with(kind.text().1.as_str()), "body must start with the constant text");
+        assert!(body.starts_with(kind.text(Lang::En).1.as_str()), "body must start with the constant text");
+    }
+
+    // ---- Fix 2 (m3 desktop review): the toast shown after every single
+    // grant now renders in Spanish, including the appended countdown
+    // suffix, with no stray `{}` left over from the `Msg` interpolation
+    // pattern.
+
+    #[test]
+    fn granted_appends_the_countdown_in_spanish_with_no_stray_placeholder() {
+        let action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000, granted_for_test()));
+        let kind = classify(action, Some(0), true);
+        let (summary, body) = action_notification_in(Lang::Es, kind, "42 min");
+        assert_eq!(summary, "sudo sin contraseña activado");
+        assert!(body.contains("42 min"), "body must carry the countdown: {body:?}");
+        assert!(body.starts_with(kind.text(Lang::Es).1.as_str()), "body must start with the Spanish constant text");
+        assert!(!body.contains("{}"), "no stray {{}} placeholder must remain: {body:?}");
     }
 
     #[test]
     fn revoked_ignores_the_countdown_argument_entirely() {
         let kind = classify(Action::Disable, Some(0), true);
-        let (summary, body) = action_notification(kind, "should never appear");
-        assert_eq!((summary, body.clone()), kind.text());
+        let (summary, body) = action_notification_in(Lang::En, kind, "should never appear");
+        assert_eq!((summary, body.clone()), kind.text(Lang::En));
         assert!(!body.contains("should never appear"));
     }
 
@@ -218,8 +252,8 @@ mod tests {
         // row 5: there is no code path through which raw stderr could
         // reach a notification body.
         let kind = classify(Action::Disable, Some(14), true);
-        let (_, body) = action_notification(kind, "1 min");
-        assert_eq!(body, OutcomeKind::VisudoRejected.text().1);
+        let (_, body) = action_notification_in(Lang::En, kind, "1 min");
+        assert_eq!(body, OutcomeKind::VisudoRejected.text(Lang::En).1);
         assert!(!body.to_lowercase().contains("syntax error"), "must never echo helper stderr text");
     }
 

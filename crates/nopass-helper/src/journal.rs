@@ -35,6 +35,22 @@ pub const SYSLOG_IDENTIFIER: &str = "nopass-helper";
 /// why [`audit`]'s own field names must NOT also carry this prefix.
 pub const FIELD_PREFIX: &str = "NOPASS";
 
+/// Opt-out env var checked ONLY by [`init`], never by [`audit`] itself —
+/// a real invocation (`pkexec`/systemd, both of which hand this binary a
+/// controlled/cleared environment; see `main.rs`'s `run()`) never sets
+/// it, so the production path is unaffected by construction. It exists
+/// for integration tests that spawn the REAL compiled `nopass-helper`
+/// binary (`tests/process_boundary.rs`) to exercise unrelated
+/// process-boundary behaviour (exit codes, stdout shape) on an
+/// unprivileged host that genuinely has a live journald socket: without
+/// this, every such spawn is a fresh process that calls the real
+/// `init()` and, if it reaches an audited outcome, writes a REAL,
+/// fabricated record into the HOST's real audit trail as an unrelated
+/// side effect of testing something else entirely. Tests that
+/// deliberately want the real journald write-and-read-back path
+/// (`tests/root_journal.rs`'s own container lane) must never set this.
+pub const DISABLE_JOURNALD_ENV: &str = "NOPASS_HELPER_TEST_DISABLE_JOURNALD";
+
 /// Configures the global `tracing` subscriber: a `tracing-journald`
 /// layer when the journald socket is reachable, otherwise a stderr `fmt`
 /// layer (design.md §9 — "If the journald socket is unavailable the
@@ -44,6 +60,18 @@ pub const FIELD_PREFIX: &str = "NOPASS";
 /// or multiple tests in the same process) is a harmless no-op instead of
 /// a panic; the configuration is otherwise identical.
 pub fn init() {
+    if std::env::var(DISABLE_JOURNALD_ENV).is_ok() {
+        // See `DISABLE_JOURNALD_ENV`'s own doc comment: an explicit,
+        // test-only opt-out, never reachable from a real pkexec/systemd
+        // invocation. Falls back to the exact same stderr layer `init`
+        // already uses when no journald socket is reachable at all —
+        // logging still never fails an operation, it is just never
+        // routed to the REAL host journal for this one process.
+        let _ = tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            .try_init();
+        return;
+    }
     match tracing_journald::layer() {
         Ok(layer) => {
             let _ = tracing_subscriber::registry()
@@ -238,14 +266,115 @@ mod tests {
         assert_eq!(FIELD_PREFIX, "NOPASS");
     }
 
+    /// Env flag selecting the re-exec'd CHILD branch below — same
+    /// process-isolation idiom `runner.rs`'s
+    /// `system_runner_clears_ambient_env_and_keeps_pkexec_uid_out_of_the_child`
+    /// and `fileops_tempdir.rs`'s `mode_0440_holds_even_under_umask_0o077`
+    /// already use for a test whose real production call has a
+    /// process-global side effect that must never bleed into any other
+    /// test sharing this binary's process.
+    const INIT_TEST_CHILD_FLAG: &str = "NOPASS_HELPER_INIT_TEST_CHILD";
+
     #[test]
     fn init_does_not_panic_in_a_sandboxed_environment_with_no_journald_socket() {
-        // This test process has no journald socket, so `init` exercises
-        // the `Err(_)` branch — the stderr fallback layer (design.md §9:
-        // "logging never fails an operation"). `try_init` (not `init`)
-        // makes this safe to call alongside any other test in the same
-        // binary that also configures a global subscriber.
-        init();
+        // `init()` calls `tracing_subscriber::registry()...try_init()`,
+        // which — unlike a scoped `tracing::subscriber::with_default` —
+        // installs a REAL, process-GLOBAL default dispatcher exactly
+        // once per process (later calls are a harmless no-op, which is
+        // this test's actual assertion: "does not panic"). On a CI
+        // sandbox with no journald socket that global default is the
+        // inert stderr fallback layer, so calling `init()` in-process
+        // used to look harmless. On a real desktop with a live journald
+        // socket (this box, among others) `init()` instead installs the
+        // REAL `tracing_journald` layer as that same process-global
+        // default — and every OTHER test in this binary that calls an
+        // audited `ops::*` path without its own scoped subscriber (most
+        // of them do not assert on the audit trail, so most of them
+        // never bothered to scope one) then silently inherits it,
+        // writing fabricated `grant`/`revoke`/`enable`/… records into
+        // the REAL host journal. That is a real, measured bug (fixed
+        // here), not a hypothetical one.
+        //
+        // The fix is process isolation, not weakening `init()`: this
+        // test still calls the real, unmodified `init()` and still
+        // proves it never panics on either branch, but it does so in a
+        // throwaway re-exec'd CHILD process (`current_exe()` + `--exact`
+        // + this one test), so whichever global default `init()`
+        // actually installs — stderr layer or real journald layer — is
+        // scoped to that child's own short-lived process and can never
+        // become the ambient default any other test in THIS process
+        // inherits.
+        if std::env::var(INIT_TEST_CHILD_FLAG).is_ok() {
+            init();
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("current test binary path");
+        let output = std::process::Command::new(exe)
+            .arg("journal::tests::init_does_not_panic_in_a_sandboxed_environment_with_no_journald_socket")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(INIT_TEST_CHILD_FLAG, "1")
+            .output()
+            .expect("spawn init()-isolated child test process");
+        assert!(
+            output.status.success(),
+            "init()-isolated child test failed (status {:?}):\nstdout: {}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// Env flag selecting the re-exec'd CHILD branch below — separate
+    /// from `INIT_TEST_CHILD_FLAG` above so this test's own
+    /// `DISABLE_JOURNALD_ENV=1` (the thing under test) can never be
+    /// confused with the outer/inner selector.
+    const DISABLE_JOURNALD_TEST_CHILD_FLAG: &str = "NOPASS_HELPER_DISABLE_JOURNALD_TEST_CHILD";
+
+    /// Fix 1 regression pin: `init()` with `DISABLE_JOURNALD_ENV` set
+    /// must take the stderr-fallback branch and never panic, exactly
+    /// like the no-socket case above — proving the opt-out
+    /// `tests/process_boundary.rs` now sets on every real-binary spawn
+    /// actually short-circuits `init()` before it ever probes (let
+    /// alone binds) the real journald socket. Isolated into its own
+    /// re-exec'd child process for the same reason as the test above:
+    /// `init()`'s `try_init()` is a real, process-global, one-shot side
+    /// effect that must never leak into any other test sharing this
+    /// binary's process.
+    #[test]
+    fn init_with_the_disable_journald_env_set_never_panics_and_skips_the_real_socket() {
+        if std::env::var(DISABLE_JOURNALD_TEST_CHILD_FLAG).is_ok() {
+            // SAFETY (not unsafe, just a note): this is the same
+            // `Command::env`-only pattern the outer branch below (and
+            // `runner.rs`'s adversarial-env test) already uses — the
+            // env var is set in THIS re-exec'd child's own environment
+            // by the parent's `Command::env` call, never via
+            // `std::env::set_var` in-process.
+            assert!(
+                std::env::var(DISABLE_JOURNALD_ENV).is_ok(),
+                "the child process must have inherited {DISABLE_JOURNALD_ENV}=1 from the parent's Command::env"
+            );
+            init();
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("current test binary path");
+        let output = std::process::Command::new(exe)
+            .arg("journal::tests::init_with_the_disable_journald_env_set_never_panics_and_skips_the_real_socket")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(DISABLE_JOURNALD_TEST_CHILD_FLAG, "1")
+            .env(DISABLE_JOURNALD_ENV, "1")
+            .output()
+            .expect("spawn DISABLE_JOURNALD_ENV-isolated child test process");
+        assert!(
+            output.status.success(),
+            "DISABLE_JOURNALD_ENV-isolated child test failed (status {:?}):\nstdout: {}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]

@@ -115,6 +115,14 @@ pub(crate) enum Msg {
     MenuActivateDuring,
     MenuDefaultDuration,
     MenuCurrentRule,
+    // ---- Fix 3 (m3 desktop review): "Current rule" is REQUIRED
+    // insensitive at the detail-item level (openspec/specs/tray-menu/
+    // spec.md:63 — reference data, not an action), which most panel
+    // themes render at low contrast. The spec constrains the submenu's
+    // *contents*, not the parent item's own label — the parent is
+    // sensitive and renders at full contrast, so the essential fact (the
+    // remaining time) belongs there too, not only buried a click away.
+    MenuCurrentRuleExpiresInPrefix,
     MenuNoActiveRule,
     MenuRuleDetailsUnavailable,
     MenuStartWithSession,
@@ -147,6 +155,59 @@ pub(crate) enum Msg {
     // says.
     ToggleUnavailableInstallationIncomplete,
     ToggleUnavailableActionInFlight,
+    // ---- Fix 2 (m3 desktop review): `outcome.rs::text()`'s 18
+    // exit-code-outcome arms — the toast shown after every single
+    // grant/disable/error, previously raw English literals. One Msg
+    // per (summary, body) half, in `OutcomeKind`'s own declaration
+    // order; `OutcomeRevoked` is shared because `OutcomeKind::Revoked`'s
+    // summary and body render the exact same sentence.
+    OutcomeGrantedSummary,
+    OutcomeGrantedBody,
+    OutcomeGrantedExpiresSuffix,
+    OutcomeRevoked,
+    OutcomeInternalErrorSummary,
+    OutcomeInternalErrorBody,
+    OutcomeVersionSkewSummary,
+    OutcomeVersionSkewBody,
+    OutcomeContextViolationSummary,
+    OutcomeContextViolationBody,
+    OutcomeUidRejectedSummary,
+    OutcomeUidRejectedBody,
+    OutcomeNotSudoerSummary,
+    OutcomeNotSudoerBody,
+    OutcomeBadDurationSummary,
+    OutcomeBadDurationBody,
+    OutcomeVisudoRejectedSummary,
+    OutcomeVisudoRejectedBody,
+    OutcomeLockBusySummary,
+    OutcomeLockBusyBody,
+    OutcomeFsFailureSummary,
+    OutcomeFsFailureBody,
+    OutcomeTimerUnscheduledSummary,
+    OutcomeTimerUnscheduledBody,
+    OutcomeCancelledSummary,
+    OutcomeCancelledBody,
+    OutcomeNotAuthorizedSummary,
+    OutcomeNotAuthorizedBody,
+    OutcomeHelperMissingSummary,
+    OutcomeHelperMissingBody,
+    OutcomeSpawnFailedSummary,
+    OutcomeSpawnFailedBody,
+    OutcomeInterruptedSummary,
+    OutcomeInterruptedBody,
+    OutcomeUnexpiringGrantSummary,
+    OutcomeUnexpiringGrantBody,
+    // ---- Fix 2 — the four M2-inherited `app.rs` notification strings
+    // (degraded-mode announcements and the watch-lost/watch-failed
+    // warnings) — the last raw English literals outside this catalogue.
+    NotifyNoTrayHostSummary,
+    NotifyNoTrayHostBody,
+    NotifyNoNotificationsSummary,
+    NotifyNoNotificationsBody,
+    NotifyWatchFailedSummary,
+    NotifyWatchFailedBody,
+    NotifyWatchLostSummary,
+    NotifyWatchLostBody,
 }
 
 impl Msg {
@@ -214,6 +275,10 @@ impl Msg {
             Msg::MenuCurrentRule => match lang {
                 Lang::En => "Current rule",
                 Lang::Es => "Regla actual",
+            },
+            Msg::MenuCurrentRuleExpiresInPrefix => match lang {
+                Lang::En => "expires in",
+                Lang::Es => "caduca en",
             },
             Msg::MenuNoActiveRule => match lang {
                 Lang::En => "No active rule",
@@ -335,6 +400,218 @@ impl Msg {
             Msg::ToggleUnavailableActionInFlight => match lang {
                 Lang::En => "Unavailable — an action is already in progress",
                 Lang::Es => "No disponible: ya hay una acción en curso",
+            },
+            Msg::OutcomeGrantedSummary => match lang {
+                Lang::En => "Passwordless sudo enabled",
+                Lang::Es => "sudo sin contraseña activado",
+            },
+            Msg::OutcomeGrantedBody => match lang {
+                Lang::En => "Passwordless sudo enabled until the requested time.",
+                Lang::Es => "sudo sin contraseña activado hasta la hora solicitada.",
+            },
+            // `{}` is the formatted countdown, filled at the call site.
+            Msg::OutcomeGrantedExpiresSuffix => match lang {
+                Lang::En => "Expires: {}.",
+                Lang::Es => "Caduca: {}.",
+            },
+            Msg::OutcomeRevoked => match lang {
+                Lang::En => "Passwordless sudo disabled",
+                Lang::Es => "sudo sin contraseña desactivado",
+            },
+            Msg::OutcomeInternalErrorSummary => match lang {
+                Lang::En => "NoPass internal error",
+                Lang::Es => "Error interno de NoPass",
+            },
+            Msg::OutcomeInternalErrorBody => match lang {
+                Lang::En => "NoPass could not complete the change: a required system program is missing or the \
+                             helper failed internally. Nothing was changed.",
+                Lang::Es => "NoPass no pudo completar el cambio: falta un programa del sistema necesario o el \
+                             ayudante falló internamente. No se realizó ningún cambio.",
+            },
+            Msg::OutcomeVersionSkewSummary => match lang {
+                Lang::En => "Helper version mismatch",
+                Lang::Es => "Versión del ayudante no coincide",
+            },
+            Msg::OutcomeVersionSkewBody => match lang {
+                Lang::En => "The installed helper does not understand this request — the tray and helper \
+                             versions do not match. Reinstall NoPass.",
+                Lang::Es => "El ayudante instalado no entiende esta solicitud: las versiones del icono y del \
+                             ayudante no coinciden. Reinstala NoPass.",
+            },
+            Msg::OutcomeContextViolationSummary => match lang {
+                Lang::En => "Invalid authorization context",
+                Lang::Es => "Contexto de autorización no válido",
+            },
+            Msg::OutcomeContextViolationBody => match lang {
+                Lang::En => "The authorization did not carry your user identity. Do not run NoPass as root.",
+                Lang::Es => "La autorización no llevaba tu identidad de usuario. No ejecutes NoPass como root.",
+            },
+            Msg::OutcomeUidRejectedSummary => match lang {
+                Lang::En => "Account not eligible",
+                Lang::Es => "Cuenta no admisible",
+            },
+            Msg::OutcomeUidRejectedBody => match lang {
+                Lang::En => "This account is not eligible for passwordless sudo (a system account, or outside \
+                             the normal user id range).",
+                Lang::Es => "Esta cuenta no es admisible para sudo sin contraseña (una cuenta de sistema, o \
+                             fuera del rango normal de id de usuario).",
+            },
+            Msg::OutcomeNotSudoerSummary => match lang {
+                Lang::En => "Not a sudoer",
+                Lang::Es => "No tiene permisos de sudo",
+            },
+            Msg::OutcomeNotSudoerBody => match lang {
+                Lang::En => "Your user is not allowed to use sudo, so passwordless sudo cannot be granted.",
+                Lang::Es => "Tu usuario no tiene permitido usar sudo, así que no se puede conceder sudo sin \
+                             contraseña.",
+            },
+            Msg::OutcomeBadDurationSummary => match lang {
+                Lang::En => "Invalid expiry time",
+                Lang::Es => "Hora de caducidad no válida",
+            },
+            Msg::OutcomeBadDurationBody => match lang {
+                Lang::En => "The requested expiry time was rejected. Check that the system clock is correct.",
+                Lang::Es => "Se rechazó la hora de caducidad solicitada. Comprueba que el reloj del sistema \
+                             sea correcto.",
+            },
+            Msg::OutcomeVisudoRejectedSummary => match lang {
+                Lang::En => "Sudo rule rejected",
+                Lang::Es => "Regla de sudo rechazada",
+            },
+            Msg::OutcomeVisudoRejectedBody => match lang {
+                Lang::En => "The generated sudo rule was rejected as invalid. Nothing was changed. Please \
+                             report this.",
+                Lang::Es => "La regla de sudo generada se rechazó por no ser válida. No se realizó ningún \
+                             cambio. Por favor, informa de esto.",
+            },
+            Msg::OutcomeLockBusySummary => match lang {
+                Lang::En => "NoPass is busy",
+                Lang::Es => "NoPass está ocupado",
+            },
+            Msg::OutcomeLockBusyBody => match lang {
+                Lang::En => "Another NoPass operation is already running. Try again in a moment.",
+                Lang::Es => "Ya hay otra operación de NoPass en curso. Inténtalo de nuevo en un momento.",
+            },
+            Msg::OutcomeFsFailureSummary => match lang {
+                Lang::En => "Could not write the rule file",
+                Lang::Es => "No se pudo escribir el archivo de la regla",
+            },
+            Msg::OutcomeFsFailureBody => match lang {
+                Lang::En => "NoPass could not write the rule file. Nothing was changed.",
+                Lang::Es => "NoPass no pudo escribir el archivo de la regla. No se realizó ningún cambio.",
+            },
+            Msg::OutcomeTimerUnscheduledSummary => match lang {
+                Lang::En => "Expiry timer could not be scheduled",
+                Lang::Es => "No se pudo programar el temporizador de caducidad",
+            },
+            Msg::OutcomeTimerUnscheduledBody => match lang {
+                Lang::En => "The expiry timer could not be scheduled, so the timed grant was withdrawn. \
+                             NoPass is re-checking whether any grant is currently active.",
+                Lang::Es => "No se pudo programar el temporizador de caducidad, así que se retiró la \
+                             concesión temporizada. NoPass está comprobando de nuevo si hay alguna \
+                             concesión activa.",
+            },
+            Msg::OutcomeCancelledSummary => match lang {
+                Lang::En => "Authorization cancelled",
+                Lang::Es => "Autorización cancelada",
+            },
+            Msg::OutcomeCancelledBody => match lang {
+                Lang::En => "Authorization cancelled. Nothing was changed.",
+                Lang::Es => "Autorización cancelada. No se realizó ningún cambio.",
+            },
+            Msg::OutcomeNotAuthorizedSummary => match lang {
+                Lang::En => "Authorization failed",
+                Lang::Es => "Autorización fallida",
+            },
+            Msg::OutcomeNotAuthorizedBody => match lang {
+                Lang::En => "Authorization failed. There may be no polkit authentication agent running in \
+                             this session, or your user is not permitted to perform this action.",
+                Lang::Es => "La autorización falló. Puede que no haya ningún agente de autenticación de \
+                             polkit en ejecución en esta sesión, o que tu usuario no tenga permiso para \
+                             realizar esta acción.",
+            },
+            Msg::OutcomeHelperMissingSummary => match lang {
+                Lang::En => "NoPass is not fully installed",
+                Lang::Es => "NoPass no está completamente instalado",
+            },
+            Msg::OutcomeHelperMissingBody => match lang {
+                Lang::En => "NoPass is not completely installed: the privileged helper is missing at \
+                             /usr/libexec/nopass-helper.",
+                Lang::Es => "NoPass no está completamente instalado: falta el ayudante privilegiado en \
+                             /usr/libexec/nopass-helper.",
+            },
+            Msg::OutcomeSpawnFailedSummary => match lang {
+                Lang::En => "polkit is not installed",
+                Lang::Es => "polkit no está instalado",
+            },
+            Msg::OutcomeSpawnFailedBody => match lang {
+                Lang::En => "`pkexec` is not installed, so NoPass cannot request authorization. Install \
+                             `polkit`.",
+                Lang::Es => "«pkexec» no está instalado, así que NoPass no puede solicitar autorización. \
+                             Instala «polkit».",
+            },
+            Msg::OutcomeInterruptedSummary => match lang {
+                Lang::En => "Authorization interrupted",
+                Lang::Es => "Autorización interrumpida",
+            },
+            Msg::OutcomeInterruptedBody => match lang {
+                Lang::En => "The authorization was interrupted. NoPass will re-check the current state.",
+                Lang::Es => "La autorización se interrumpió. NoPass volverá a comprobar el estado actual.",
+            },
+            Msg::OutcomeUnexpiringGrantSummary => match lang {
+                Lang::En => "Passwordless sudo active with no expiry",
+                Lang::Es => "sudo sin contraseña activo sin caducidad",
+            },
+            Msg::OutcomeUnexpiringGrantBody => match lang {
+                Lang::En => "Passwordless sudo is active with no expiry, because its timer could not be \
+                             scheduled. Use Disable when you are done.",
+                Lang::Es => "sudo sin contraseña está activo sin caducidad, porque no se pudo programar su \
+                             temporizador. Usa Desactivar cuando termines.",
+            },
+            Msg::NotifyNoTrayHostSummary => match lang {
+                Lang::En => "No tray host found",
+                Lang::Es => "No se encontró ningún host de bandeja",
+            },
+            Msg::NotifyNoTrayHostBody => match lang {
+                Lang::En => "NoPass could not find a status-notifier host (for example GNOME's AppIndicator \
+                             extension). The icon will appear automatically once one becomes available.",
+                Lang::Es => "NoPass no pudo encontrar ningún host de status-notifier (por ejemplo, la \
+                             extensión AppIndicator de GNOME). El icono aparecerá automáticamente en cuanto \
+                             haya uno disponible.",
+            },
+            Msg::NotifyNoNotificationsSummary => match lang {
+                Lang::En => "No notification service found",
+                Lang::Es => "No se encontró ningún servicio de notificaciones",
+            },
+            Msg::NotifyNoNotificationsBody => match lang {
+                Lang::En => "NoPass could not find a desktop notification service. Outcomes will still be \
+                             shown in the icon and its tooltip, but no toast notifications will appear.",
+                Lang::Es => "NoPass no pudo encontrar ningún servicio de notificaciones de escritorio. Los \
+                             resultados se seguirán mostrando en el icono y su información sobre \
+                             herramientas, pero no aparecerán notificaciones emergentes.",
+            },
+            // `{}` is the watched run-dir path, filled at the call site.
+            Msg::NotifyWatchFailedSummary => match lang {
+                Lang::En => "Could not watch for changes",
+                Lang::Es => "No se pudo vigilar los cambios",
+            },
+            Msg::NotifyWatchFailedBody => match lang {
+                Lang::En => "NoPass could not set up a watch on {}. Falling back to checking every 60 \
+                             seconds; it will keep retrying.",
+                Lang::Es => "NoPass no pudo configurar una vigilancia sobre {}. Se recurrirá a comprobarlo \
+                             cada 60 segundos; seguirá reintentándolo.",
+            },
+            Msg::NotifyWatchLostSummary => match lang {
+                Lang::En => "Lost the change watch",
+                Lang::Es => "Se perdió la vigilancia de cambios",
+            },
+            Msg::NotifyWatchLostBody => match lang {
+                Lang::En => "NoPass's watch on {} was lost — the directory was replaced or removed. \
+                             Falling back to checking every 60 seconds; it will retry establishing a new \
+                             watch on the next tick.",
+                Lang::Es => "Se perdió la vigilancia de NoPass sobre {}: el directorio se sustituyó o se \
+                             eliminó. Se recurrirá a comprobarlo cada 60 segundos; se reintentará \
+                             establecer una nueva vigilancia en el siguiente ciclo.",
             },
         }
     }
@@ -559,7 +836,8 @@ mod tests {
                 Msg::MinutesSuffix => Some(Msg::MenuActivateDuring),
                 Msg::MenuActivateDuring => Some(Msg::MenuDefaultDuration),
                 Msg::MenuDefaultDuration => Some(Msg::MenuCurrentRule),
-                Msg::MenuCurrentRule => Some(Msg::MenuNoActiveRule),
+                Msg::MenuCurrentRule => Some(Msg::MenuCurrentRuleExpiresInPrefix),
+                Msg::MenuCurrentRuleExpiresInPrefix => Some(Msg::MenuNoActiveRule),
                 Msg::MenuNoActiveRule => Some(Msg::MenuRuleDetailsUnavailable),
                 Msg::MenuRuleDetailsUnavailable => Some(Msg::MenuStartWithSession),
                 Msg::MenuStartWithSession => Some(Msg::MenuAbout),
@@ -581,7 +859,51 @@ mod tests {
                 Msg::ConsentConfirmPersist => Some(Msg::ConsentCancel),
                 Msg::ConsentCancel => Some(Msg::ToggleUnavailableInstallationIncomplete),
                 Msg::ToggleUnavailableInstallationIncomplete => Some(Msg::ToggleUnavailableActionInFlight),
-                Msg::ToggleUnavailableActionInFlight => None,
+                Msg::ToggleUnavailableActionInFlight => Some(Msg::OutcomeGrantedSummary),
+                Msg::OutcomeGrantedSummary => Some(Msg::OutcomeGrantedBody),
+                Msg::OutcomeGrantedBody => Some(Msg::OutcomeGrantedExpiresSuffix),
+                Msg::OutcomeGrantedExpiresSuffix => Some(Msg::OutcomeRevoked),
+                Msg::OutcomeRevoked => Some(Msg::OutcomeInternalErrorSummary),
+                Msg::OutcomeInternalErrorSummary => Some(Msg::OutcomeInternalErrorBody),
+                Msg::OutcomeInternalErrorBody => Some(Msg::OutcomeVersionSkewSummary),
+                Msg::OutcomeVersionSkewSummary => Some(Msg::OutcomeVersionSkewBody),
+                Msg::OutcomeVersionSkewBody => Some(Msg::OutcomeContextViolationSummary),
+                Msg::OutcomeContextViolationSummary => Some(Msg::OutcomeContextViolationBody),
+                Msg::OutcomeContextViolationBody => Some(Msg::OutcomeUidRejectedSummary),
+                Msg::OutcomeUidRejectedSummary => Some(Msg::OutcomeUidRejectedBody),
+                Msg::OutcomeUidRejectedBody => Some(Msg::OutcomeNotSudoerSummary),
+                Msg::OutcomeNotSudoerSummary => Some(Msg::OutcomeNotSudoerBody),
+                Msg::OutcomeNotSudoerBody => Some(Msg::OutcomeBadDurationSummary),
+                Msg::OutcomeBadDurationSummary => Some(Msg::OutcomeBadDurationBody),
+                Msg::OutcomeBadDurationBody => Some(Msg::OutcomeVisudoRejectedSummary),
+                Msg::OutcomeVisudoRejectedSummary => Some(Msg::OutcomeVisudoRejectedBody),
+                Msg::OutcomeVisudoRejectedBody => Some(Msg::OutcomeLockBusySummary),
+                Msg::OutcomeLockBusySummary => Some(Msg::OutcomeLockBusyBody),
+                Msg::OutcomeLockBusyBody => Some(Msg::OutcomeFsFailureSummary),
+                Msg::OutcomeFsFailureSummary => Some(Msg::OutcomeFsFailureBody),
+                Msg::OutcomeFsFailureBody => Some(Msg::OutcomeTimerUnscheduledSummary),
+                Msg::OutcomeTimerUnscheduledSummary => Some(Msg::OutcomeTimerUnscheduledBody),
+                Msg::OutcomeTimerUnscheduledBody => Some(Msg::OutcomeCancelledSummary),
+                Msg::OutcomeCancelledSummary => Some(Msg::OutcomeCancelledBody),
+                Msg::OutcomeCancelledBody => Some(Msg::OutcomeNotAuthorizedSummary),
+                Msg::OutcomeNotAuthorizedSummary => Some(Msg::OutcomeNotAuthorizedBody),
+                Msg::OutcomeNotAuthorizedBody => Some(Msg::OutcomeHelperMissingSummary),
+                Msg::OutcomeHelperMissingSummary => Some(Msg::OutcomeHelperMissingBody),
+                Msg::OutcomeHelperMissingBody => Some(Msg::OutcomeSpawnFailedSummary),
+                Msg::OutcomeSpawnFailedSummary => Some(Msg::OutcomeSpawnFailedBody),
+                Msg::OutcomeSpawnFailedBody => Some(Msg::OutcomeInterruptedSummary),
+                Msg::OutcomeInterruptedSummary => Some(Msg::OutcomeInterruptedBody),
+                Msg::OutcomeInterruptedBody => Some(Msg::OutcomeUnexpiringGrantSummary),
+                Msg::OutcomeUnexpiringGrantSummary => Some(Msg::OutcomeUnexpiringGrantBody),
+                Msg::OutcomeUnexpiringGrantBody => Some(Msg::NotifyNoTrayHostSummary),
+                Msg::NotifyNoTrayHostSummary => Some(Msg::NotifyNoTrayHostBody),
+                Msg::NotifyNoTrayHostBody => Some(Msg::NotifyNoNotificationsSummary),
+                Msg::NotifyNoNotificationsSummary => Some(Msg::NotifyNoNotificationsBody),
+                Msg::NotifyNoNotificationsBody => Some(Msg::NotifyWatchFailedSummary),
+                Msg::NotifyWatchFailedSummary => Some(Msg::NotifyWatchFailedBody),
+                Msg::NotifyWatchFailedBody => Some(Msg::NotifyWatchLostSummary),
+                Msg::NotifyWatchLostSummary => Some(Msg::NotifyWatchLostBody),
+                Msg::NotifyWatchLostBody => None,
             }
         }
 
@@ -798,7 +1120,7 @@ mod tests {
         let all = Msg::all();
         assert_eq!(
             all.len(),
-            42,
+            87,
             "Msg::all() must cover every arm; if this fails after adding/removing a variant, \
              Msg::next()'s match already forced you to update the chain — update this expected \
              count to match"

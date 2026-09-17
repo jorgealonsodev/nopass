@@ -278,18 +278,35 @@ fn duration_label(lang: Lang, duration: GrantDuration) -> &'static str {
 /// §3.2 row 1 — `Absent`/`Faulted`, or a `Parsed` file that failed its
 /// own coherence check); a single insensitive "No active rule" item
 /// otherwise.
+///
+/// Fix 3 (m3 desktop review): the spec's own requirement above binds the
+/// detail *items* to insensitive — correctly, since they are reference
+/// data, not actions, and making them look clickable would be worse. It
+/// says nothing about the parent item's own label, which is sensitive
+/// and renders at full contrast on every panel theme. So the remaining
+/// time — the one fact a user actually glances at the tray for — is
+/// also folded into the parent label, exactly for the coherent-grant
+/// case that already computes it for the detail children below; every
+/// other case (unavailable, no active rule) keeps the plain label,
+/// since there is no remaining-time fact to add.
 fn current_rule_node(lang: Lang, model: &MenuModel) -> MenuNode {
+    let mut label = Msg::MenuCurrentRule.text(lang).to_string();
     let children = match &model.state {
         TrayState::Active { user: Some(user), expiry: Some(expiry) } => match model.file.parsed() {
-            Some(status) => vec![
-                detail_item(lang, Msg::RuleUserPrefix, user),
-                detail_item(lang, Msg::RulePathPrefix, &status.rule_path),
-                detail_item(lang, Msg::RuleExpiresPrefix, &expiry_value_text(lang, *expiry)),
-                detail_item(lang, Msg::RuleRemainingPrefix, &format::countdown_in(lang, *expiry, model.now)),
-            ],
+            Some(status) => {
+                label = format!("{label} — {}", current_rule_summary(lang, *expiry, model.now));
+                vec![
+                    detail_item(lang, Msg::RuleUserPrefix, user),
+                    detail_item(lang, Msg::RulePathPrefix, &status.rule_path),
+                    detail_item(lang, Msg::RuleExpiresPrefix, &expiry_value_text(lang, *expiry)),
+                    detail_item(lang, Msg::RuleRemainingPrefix, &format::countdown_in(lang, *expiry, model.now)),
+                ]
+            }
             // The merged state claims a coherent active grant, but the
             // file this snapshot carries cannot back it up — treated the
-            // same as the no-detail case below, never trusted.
+            // same as the no-detail case below, never trusted; the
+            // parent label stays plain since there is nothing corroborated
+            // to summarize.
             None => vec![unavailable_item(lang)],
         },
         // Probe-confirmed active, but no coherent file detail to show
@@ -298,7 +315,23 @@ fn current_rule_node(lang: Lang, model: &MenuModel) -> MenuNode {
         TrayState::Inactive | TrayState::Unknown => vec![no_active_rule_item(lang)],
     };
 
-    MenuNode { label: Msg::MenuCurrentRule.text(lang).to_string(), enabled: true, checked: None, kind: MenuNodeKind::Static, children }
+    MenuNode { label, enabled: true, checked: None, kind: MenuNodeKind::Static, children }
+}
+
+/// The parent label's own summary fragment (Fix 3): for a concrete
+/// countdown (`Expiry::At`) this is "<expires-in-verb> <countdown>",
+/// exactly `Msg::MenuCurrentRuleExpiresInPrefix` followed by the same
+/// `countdown_in` text the "Remaining" detail item already renders —
+/// e.g. "expires in 59 min" / "caduca en 59 min". `Never`/`Reboot`
+/// render `countdown_in`'s own already-complete phrase alone ("no
+/// expiry"/"until reboot") — prefixing either with "expires in" would
+/// read as nonsense ("expires in no expiry").
+fn current_rule_summary(lang: Lang, expiry: Expiry, now: u64) -> String {
+    let countdown = format::countdown_in(lang, expiry, now);
+    match expiry {
+        Expiry::At { .. } => format!("{} {countdown}", Msg::MenuCurrentRuleExpiresInPrefix.text(lang)),
+        Expiry::Never | Expiry::Reboot => countdown,
+    }
 }
 
 fn expiry_value_text(lang: Lang, expiry: Expiry) -> String {
@@ -604,6 +637,44 @@ mod tests {
         assert_eq!(current_rule.children[3].label, "Remaining: 42 min");
     }
 
+    // ---- Fix 3 (m3 desktop review): the parent "Current rule" item is
+    // sensitive (spec `tray-menu` requires only the detail items
+    // insensitive) and renders the remaining time itself, in both
+    // languages, so the essential fact is legible without opening the
+    // low-contrast submenu at all. Detail items stay exactly as pinned
+    // above — this only pins the PARENT label.
+
+    #[test]
+    fn an_active_temporary_grant_folds_the_remaining_time_into_the_sensitive_parent_label() {
+        let expiry = Expiry::At { epoch: NOW + 60 * 42 };
+        let status = helper_status("jorge", expiry, "/etc/sudoers.d/90-nopass-1000");
+        let state = TrayState::Active { user: Some("jorge".to_string()), expiry: Some(expiry) };
+        let m = model(state, FileReading::Parsed(status), default_config(), AutostartState::Disabled);
+
+        let en = &menu_tree_in(Lang::En, &m)[3];
+        assert_eq!(en.label, "Current rule — expires in 42 min");
+        assert!(en.enabled, "the parent item itself must stay sensitive/clickable");
+
+        let es = &menu_tree_in(Lang::Es, &m)[3];
+        assert_eq!(es.label, "Regla actual — caduca en 42 min.");
+        assert!(es.enabled);
+    }
+
+    #[test]
+    fn an_active_grant_with_never_or_reboot_expiry_folds_the_plain_countdown_phrase_into_the_parent_label() {
+        for (expiry, expected_en, expected_es) in [
+            (Expiry::Never, "Current rule — no expiry", "Regla actual — sin caducidad"),
+            (Expiry::Reboot, "Current rule — until reboot", "Regla actual — hasta el reinicio"),
+        ] {
+            let status = helper_status("jorge", expiry, "/etc/sudoers.d/90-nopass-1000");
+            let state = TrayState::Active { user: Some("jorge".to_string()), expiry: Some(expiry) };
+            let m = model(state, FileReading::Parsed(status), default_config(), AutostartState::Disabled);
+
+            assert_eq!(menu_tree_in(Lang::En, &m)[3].label, expected_en, "{expiry:?}");
+            assert_eq!(menu_tree_in(Lang::Es, &m)[3].label, expected_es, "{expiry:?}");
+        }
+    }
+
     #[test]
     fn an_inactive_state_renders_a_single_insensitive_no_active_rule_item() {
         let m = model(TrayState::Inactive, FileReading::Absent, default_config(), AutostartState::Disabled);
@@ -612,6 +683,9 @@ mod tests {
         assert_eq!(current_rule.children.len(), 1);
         assert_eq!(current_rule.children[0].label, "No active rule");
         assert!(!current_rule.children[0].enabled);
+        // No remaining-time fact exists here, so the parent label stays
+        // plain — unlike the coherent-active-grant case above.
+        assert_eq!(current_rule.label, "Current rule");
     }
 
     #[test]
@@ -624,6 +698,8 @@ mod tests {
             assert_eq!(current_rule.children.len(), 1, "{file:?}");
             assert_eq!(current_rule.children[0].label, "Rule details unavailable — the state file could not be read");
             assert!(!current_rule.children[0].enabled);
+            // Nothing corroborated to summarize — plain parent label.
+            assert_eq!(current_rule.label, "Current rule");
         }
     }
 

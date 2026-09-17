@@ -36,10 +36,20 @@ fn helper_binary() -> std::path::PathBuf {
 /// environment (matching how `pkexec`/systemd actually invoke this
 /// binary — design.md §3), `PKEXEC_UID` set only in the CHILD's own
 /// environment, never in this test process's.
+///
+/// Also sets `journal::DISABLE_JOURNALD_ENV`: every test below spawns
+/// the REAL compiled binary on an unprivileged, otherwise-ungated host
+/// (unlike `root_system.rs`/`root_journal.rs`, which only ever run
+/// inside a disposable container) purely to check exit codes and
+/// stdout, never the audit trail. Without this, a host that genuinely
+/// has a live journald socket would have each spawn write a real,
+/// fabricated audit record as an unrelated side effect of testing
+/// process-boundary behaviour.
 fn run_helper(args: &[&str], pkexec_uid: Option<u32>) -> std::process::Output {
     let mut cmd = Command::new(helper_binary());
     cmd.args(args);
     cmd.env_clear();
+    cmd.env(nopass_helper::journal::DISABLE_JOURNALD_ENV, "1");
     if let Some(uid) = pkexec_uid {
         cmd.env("PKEXEC_UID", uid.to_string());
     }

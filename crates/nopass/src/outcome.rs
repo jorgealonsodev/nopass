@@ -16,6 +16,7 @@ use nopass_core::expiry::Expiry;
 
 use crate::consent::Granted;
 use crate::duration::GrantDuration;
+use crate::format::{Lang, Msg};
 use crate::probe::Probe;
 
 /// What the tray asked the helper to do (design.md §2 `outcome`, §4.3,
@@ -181,105 +182,85 @@ impl OutcomeKind {
         }
     }
 
-    /// `(summary, body)` — design.md §5/§5.1's literal user-facing text.
-    /// This is where a future `format::outcome_text` (Phase 6/7) will
-    /// delegate once `format.rs` exists; kept here for now because the
-    /// uniqueness this table promises ("Each documented code produces
-    /// its own message") is exactly what this phase's tests prove.
+    /// `(summary, body)` — design.md §5/§5.1's literal user-facing text,
+    /// resolved through `format.rs`'s `Msg` catalogue (Fix 2, m3 desktop
+    /// review) so the toast shown after every single grant/disable/error
+    /// speaks the caller's `lang` rather than a raw English literal. The
+    /// uniqueness this table promises ("Each documented code produces its
+    /// own message") is exactly what this module's own tests still prove,
+    /// per `lang`.
     ///
     /// [`OutcomeKind::Granted`]'s body deliberately does not spell out a
-    /// formatted "HH:MM" yet — that formatting belongs to
-    /// `format::countdown` (Phase 7), which does not exist in this
-    /// phase; the caller composing a notification is expected to append
-    /// the countdown separately, the same split design.md's Phase 7/8
-    /// task list already describes for `notifications.rs`.
-    pub fn text(&self) -> (String, String) {
+    /// formatted "HH:MM" itself — that formatting belongs to
+    /// `format::countdown`; the caller composing a notification appends
+    /// the countdown separately (`notifications.rs`'s
+    /// `action_notification`, via `Msg::OutcomeGrantedExpiresSuffix`).
+    pub fn text(&self, lang: Lang) -> (String, String) {
         match self {
-            OutcomeKind::Granted { .. } => (
-                "Passwordless sudo enabled".to_string(),
-                "Passwordless sudo enabled until the requested time.".to_string(),
-            ),
-            OutcomeKind::Revoked => {
-                ("Passwordless sudo disabled".to_string(), "Passwordless sudo disabled".to_string())
+            OutcomeKind::Granted { .. } => {
+                (Msg::OutcomeGrantedSummary.text(lang).to_string(), Msg::OutcomeGrantedBody.text(lang).to_string())
             }
+            OutcomeKind::Revoked => (Msg::OutcomeRevoked.text(lang).to_string(), Msg::OutcomeRevoked.text(lang).to_string()),
             OutcomeKind::InternalError => (
-                "NoPass internal error".to_string(),
-                "NoPass could not complete the change: a required system program is missing or the \
-                 helper failed internally. Nothing was changed."
-                    .to_string(),
+                Msg::OutcomeInternalErrorSummary.text(lang).to_string(),
+                Msg::OutcomeInternalErrorBody.text(lang).to_string(),
             ),
             OutcomeKind::VersionSkew => (
-                "Helper version mismatch".to_string(),
-                "The installed helper does not understand this request — the tray and helper \
-                 versions do not match. Reinstall NoPass."
-                    .to_string(),
+                Msg::OutcomeVersionSkewSummary.text(lang).to_string(),
+                Msg::OutcomeVersionSkewBody.text(lang).to_string(),
             ),
             OutcomeKind::ContextViolation => (
-                "Invalid authorization context".to_string(),
-                "The authorization did not carry your user identity. Do not run NoPass as root.".to_string(),
+                Msg::OutcomeContextViolationSummary.text(lang).to_string(),
+                Msg::OutcomeContextViolationBody.text(lang).to_string(),
             ),
             OutcomeKind::UidRejected => (
-                "Account not eligible".to_string(),
-                "This account is not eligible for passwordless sudo (a system account, or outside \
-                 the normal user id range)."
-                    .to_string(),
+                Msg::OutcomeUidRejectedSummary.text(lang).to_string(),
+                Msg::OutcomeUidRejectedBody.text(lang).to_string(),
             ),
-            OutcomeKind::NotSudoer => (
-                "Not a sudoer".to_string(),
-                "Your user is not allowed to use sudo, so passwordless sudo cannot be granted.".to_string(),
-            ),
+            OutcomeKind::NotSudoer => {
+                (Msg::OutcomeNotSudoerSummary.text(lang).to_string(), Msg::OutcomeNotSudoerBody.text(lang).to_string())
+            }
             OutcomeKind::BadDuration => (
-                "Invalid expiry time".to_string(),
-                "The requested expiry time was rejected. Check that the system clock is correct.".to_string(),
+                Msg::OutcomeBadDurationSummary.text(lang).to_string(),
+                Msg::OutcomeBadDurationBody.text(lang).to_string(),
             ),
             OutcomeKind::VisudoRejected => (
-                "Sudo rule rejected".to_string(),
-                "The generated sudo rule was rejected as invalid. Nothing was changed. Please report this."
-                    .to_string(),
+                Msg::OutcomeVisudoRejectedSummary.text(lang).to_string(),
+                Msg::OutcomeVisudoRejectedBody.text(lang).to_string(),
             ),
-            OutcomeKind::LockBusy => (
-                "NoPass is busy".to_string(),
-                "Another NoPass operation is already running. Try again in a moment.".to_string(),
-            ),
-            OutcomeKind::FsFailure => (
-                "Could not write the rule file".to_string(),
-                "NoPass could not write the rule file. Nothing was changed.".to_string(),
-            ),
+            OutcomeKind::LockBusy => {
+                (Msg::OutcomeLockBusySummary.text(lang).to_string(), Msg::OutcomeLockBusyBody.text(lang).to_string())
+            }
+            OutcomeKind::FsFailure => {
+                (Msg::OutcomeFsFailureSummary.text(lang).to_string(), Msg::OutcomeFsFailureBody.text(lang).to_string())
+            }
             OutcomeKind::TimerUnscheduled => (
-                "Expiry timer could not be scheduled".to_string(),
-                "The expiry timer could not be scheduled, so the timed grant was withdrawn. NoPass \
-                 is re-checking whether any grant is currently active."
-                    .to_string(),
+                Msg::OutcomeTimerUnscheduledSummary.text(lang).to_string(),
+                Msg::OutcomeTimerUnscheduledBody.text(lang).to_string(),
             ),
             OutcomeKind::Cancelled => (
-                "Authorization cancelled".to_string(),
-                "Authorization cancelled. Nothing was changed.".to_string(),
+                Msg::OutcomeCancelledSummary.text(lang).to_string(),
+                Msg::OutcomeCancelledBody.text(lang).to_string(),
             ),
             OutcomeKind::NotAuthorized => (
-                "Authorization failed".to_string(),
-                "Authorization failed. There may be no polkit authentication agent running in this \
-                 session, or your user is not permitted to perform this action."
-                    .to_string(),
+                Msg::OutcomeNotAuthorizedSummary.text(lang).to_string(),
+                Msg::OutcomeNotAuthorizedBody.text(lang).to_string(),
             ),
             OutcomeKind::HelperMissing => (
-                "NoPass is not fully installed".to_string(),
-                "NoPass is not completely installed: the privileged helper is missing at \
-                 /usr/libexec/nopass-helper."
-                    .to_string(),
+                Msg::OutcomeHelperMissingSummary.text(lang).to_string(),
+                Msg::OutcomeHelperMissingBody.text(lang).to_string(),
             ),
             OutcomeKind::SpawnFailed => (
-                "polkit is not installed".to_string(),
-                "`pkexec` is not installed, so NoPass cannot request authorization. Install `polkit`.".to_string(),
+                Msg::OutcomeSpawnFailedSummary.text(lang).to_string(),
+                Msg::OutcomeSpawnFailedBody.text(lang).to_string(),
             ),
             OutcomeKind::Interrupted => (
-                "Authorization interrupted".to_string(),
-                "The authorization was interrupted. NoPass will re-check the current state.".to_string(),
+                Msg::OutcomeInterruptedSummary.text(lang).to_string(),
+                Msg::OutcomeInterruptedBody.text(lang).to_string(),
             ),
             OutcomeKind::UnexpiringGrant => (
-                "Passwordless sudo active with no expiry".to_string(),
-                "Passwordless sudo is active with no expiry, because its timer could not be \
-                 scheduled. Use Disable when you are done."
-                    .to_string(),
+                Msg::OutcomeUnexpiringGrantSummary.text(lang).to_string(),
+                Msg::OutcomeUnexpiringGrantBody.text(lang).to_string(),
             ),
         }
     }
@@ -545,7 +526,7 @@ mod tests {
 
     #[test]
     fn every_documented_outcome_renders_a_distinct_summary_and_body_pair() {
-        let rendered: Vec<(String, String)> = all_documented_outcomes().iter().map(OutcomeKind::text).collect();
+        let rendered: Vec<(String, String)> = all_documented_outcomes().iter().map(|k| k.text(Lang::En)).collect();
         let mut sorted = rendered.clone();
         sorted.sort();
         sorted.dedup();
@@ -557,36 +538,49 @@ mod tests {
     }
 
     #[test]
+    fn every_documented_outcome_renders_a_distinct_summary_and_body_pair_in_spanish_too() {
+        let rendered: Vec<(String, String)> = all_documented_outcomes().iter().map(|k| k.text(Lang::Es)).collect();
+        let mut sorted = rendered.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            rendered.len(),
+            "no two distinct outcomes may share the same rendered Spanish (summary, body) pair: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn exit_seventeen_text_asserts_neither_that_nothing_changed_nor_that_a_grant_is_active() {
-        let (_, body) = OutcomeKind::TimerUnscheduled.text();
+        let (_, body) = OutcomeKind::TimerUnscheduled.text(Lang::En);
         assert!(!body.contains("Nothing was changed"), "must not claim nothing changed: {body:?}");
         assert!(!body.to_lowercase().contains("is active"), "must not claim a live grant either: {body:?}");
     }
 
     #[test]
     fn exit_seventeen_text_differs_from_exit_sixteen_text() {
-        assert_ne!(OutcomeKind::TimerUnscheduled.text(), OutcomeKind::FsFailure.text());
+        assert_ne!(OutcomeKind::TimerUnscheduled.text(Lang::En), OutcomeKind::FsFailure.text(Lang::En));
     }
 
     #[test]
     fn pkexec_126_and_127_texts_are_distinguished_from_each_other_and_from_helper_texts() {
-        let cancelled = OutcomeKind::Cancelled.text();
-        let not_authorized = OutcomeKind::NotAuthorized.text();
-        let helper_missing = OutcomeKind::HelperMissing.text();
+        let cancelled = OutcomeKind::Cancelled.text(Lang::En);
+        let not_authorized = OutcomeKind::NotAuthorized.text(Lang::En);
+        let helper_missing = OutcomeKind::HelperMissing.text(Lang::En);
         assert_ne!(cancelled, not_authorized);
         assert_ne!(cancelled, helper_missing);
         assert_ne!(not_authorized, helper_missing);
         for helper_text in [
-            OutcomeKind::InternalError.text(),
-            OutcomeKind::VersionSkew.text(),
-            OutcomeKind::ContextViolation.text(),
-            OutcomeKind::UidRejected.text(),
-            OutcomeKind::NotSudoer.text(),
-            OutcomeKind::BadDuration.text(),
-            OutcomeKind::VisudoRejected.text(),
-            OutcomeKind::LockBusy.text(),
-            OutcomeKind::FsFailure.text(),
-            OutcomeKind::TimerUnscheduled.text(),
+            OutcomeKind::InternalError.text(Lang::En),
+            OutcomeKind::VersionSkew.text(Lang::En),
+            OutcomeKind::ContextViolation.text(Lang::En),
+            OutcomeKind::UidRejected.text(Lang::En),
+            OutcomeKind::NotSudoer.text(Lang::En),
+            OutcomeKind::BadDuration.text(Lang::En),
+            OutcomeKind::VisudoRejected.text(Lang::En),
+            OutcomeKind::LockBusy.text(Lang::En),
+            OutcomeKind::FsFailure.text(Lang::En),
+            OutcomeKind::TimerUnscheduled.text(Lang::En),
         ] {
             assert_ne!(cancelled, helper_text);
             assert_ne!(not_authorized, helper_text);
@@ -648,5 +642,38 @@ mod tests {
             }
             assert_eq!(outcome.severity(), Severity::Error, "{outcome:?} must be Severity::Error");
         }
+    }
+
+    // ---- Fix 2 (m3 desktop review) — every OutcomeKind renders Spanish
+    // through the same `text(lang)` signature as English, and the two
+    // languages are distinct per outcome (localization's own
+    // distinctness rule, applied here the same way format.rs's
+    // `every_msg_arm_renders_both_languages_and_they_are_distinct`
+    // applies it to `Msg`).
+
+    #[test]
+    fn every_documented_outcome_renders_spanish_and_it_differs_from_english() {
+        for outcome in all_documented_outcomes() {
+            let (en_summary, en_body) = outcome.text(Lang::En);
+            let (es_summary, es_body) = outcome.text(Lang::Es);
+            assert!(!es_summary.is_empty(), "{outcome:?} Spanish summary must not be empty");
+            assert!(!es_body.is_empty(), "{outcome:?} Spanish body must not be empty");
+            assert_ne!(en_summary, es_summary, "{outcome:?} summary must differ per language");
+            // `Revoked`'s summary and body render the same sentence in
+            // both languages by design (see `text`'s own Revoked arm) —
+            // only the body pair needs the cross-language distinctness
+            // check for every other outcome.
+            if !matches!(outcome, OutcomeKind::Revoked) {
+                assert_ne!(en_body, es_body, "{outcome:?} body must differ per language");
+            }
+        }
+    }
+
+    #[test]
+    fn revoked_summary_and_body_are_the_same_sentence_in_both_languages() {
+        let (summary, body) = OutcomeKind::Revoked.text(Lang::En);
+        assert_eq!(summary, body);
+        let (summary, body) = OutcomeKind::Revoked.text(Lang::Es);
+        assert_eq!(summary, body);
     }
 }

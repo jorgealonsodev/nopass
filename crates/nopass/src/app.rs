@@ -218,15 +218,13 @@ impl App {
             Mode::Full => {}
             Mode::NoTrayHost => self.notify.post(
                 Category::Environment,
-                "No tray host found",
-                "NoPass could not find a status-notifier host (for example GNOME's AppIndicator \
-                 extension). The icon will appear automatically once one becomes available.",
+                format::Msg::NotifyNoTrayHostSummary.text(format::lang()),
+                format::Msg::NotifyNoTrayHostBody.text(format::lang()),
             ),
             Mode::NoNotifications => self.notify.post(
                 Category::Environment,
-                "No notification service found",
-                "NoPass could not find a desktop notification service. Outcomes will still be \
-                 shown in the icon and its tooltip, but no toast notifications will appear.",
+                format::Msg::NotifyNoNotificationsSummary.text(format::lang()),
+                format::Msg::NotifyNoNotificationsBody.text(format::lang()),
             ),
         }
         if let PolkitReadiness::ActionMissing(reason) = self.polkit {
@@ -327,12 +325,8 @@ impl App {
                 self.watch_warning_posted = true;
                 self.notify.post(
                     Category::Environment,
-                    "Could not watch for changes",
-                    &format!(
-                        "NoPass could not set up a watch on {}. Falling back to checking every 60 \
-                         seconds; it will keep retrying.",
-                        self.run_dir.display()
-                    ),
+                    format::Msg::NotifyWatchFailedSummary.text(format::lang()),
+                    &format::Msg::NotifyWatchFailedBody.text(format::lang()).replace("{}", &self.run_dir.display().to_string()),
                 );
             }
         }
@@ -647,7 +641,7 @@ impl App {
         if let Some(prev_kind) = self.pending_escalation.take() {
             if let Ok(probe) = result {
                 if let Some(escalated) = outcome::escalate(prev_kind, probe) {
-                    let (summary, body) = escalated.text();
+                    let (summary, body) = escalated.text(format::lang());
                     self.notify.post(Category::Action, &summary, &body);
                 }
             }
@@ -690,13 +684,8 @@ impl App {
                 self.watch = None;
                 self.notify.post(
                     Category::Environment,
-                    "Lost the change watch",
-                    &format!(
-                        "NoPass's watch on {} was lost — the directory was replaced or removed. \
-                         Falling back to checking every 60 seconds; it will retry establishing a \
-                         new watch on the next tick.",
-                        self.run_dir.display()
-                    ),
+                    format::Msg::NotifyWatchLostSummary.text(format::lang()),
+                    &format::Msg::NotifyWatchLostBody.text(format::lang()).replace("{}", &self.run_dir.display().to_string()),
                 );
             }
             Event::MenuOpened => {
@@ -979,7 +968,11 @@ mod tests {
         assert!(recv_within(&rx, NONE_EXPECTED).is_none(), "a second in-flight toggle must never spawn a second action");
 
         let posts = notify.posts.lock().unwrap();
-        assert!(posts.iter().any(|(c, s, _)| *c == Category::Action && s == "Passwordless sudo enabled"));
+        assert!(
+            posts
+                .iter()
+                .any(|(c, s, _)| *c == Category::Action && s == format::Msg::OutcomeGrantedSummary.text(format::lang()))
+        );
     }
 
     /// A `CommandRunner` fake that returns its scripted results in order
@@ -1090,6 +1083,60 @@ mod tests {
             other => panic!("expected exactly one enable dispatch, got {other:?}"),
         }
         assert!(app.consent.branch().is_none(), "confirming must clear the pending duration");
+    }
+
+    // Reproduces, at the real `App`, the exact field sequence observed on a
+    // real desktop with no persisted `config.toml`: arm a duration, confirm
+    // WITHOUT persisting ("I understand — activate", not "don't warn
+    // again"), let the grant go through, then pick ANOTHER duration under
+    // "Activate during…" ~seconds later. `warning_acknowledged` was never
+    // written to disk, so `ConsentState::acknowledged` must still be
+    // `false` — the second `DurationSelected` must re-arm the branch
+    // (spec `activation-consent` "No Grant Dispatch Without Recorded
+    // Consent"), never dispatch directly. Only ONE runner result is
+    // scripted on purpose: if the second `DurationSelected` bypassed
+    // consent and dispatched too, `AnyCommandRunner`'s queue would be
+    // empty and it would report a spawn error on the channel instead of
+    // staying silent — so `recv_within(..).is_none()` below is proof, not
+    // an assumption, that no second privileged invocation was made.
+    #[test]
+    fn a_second_duration_selected_after_an_unpersisted_confirmation_re_arms_rather_than_granting() {
+        let runner: Arc<dyn CommandRunner> =
+            Arc::new(AnyCommandRunner::new(vec![Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] })]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let mut app = unconsented_app(runner, tray, notify);
+        app.current_state = TrayState::Inactive;
+        let rx = app.events_rx.clone();
+
+        // 1) First activation: arm, then confirm with persist=false.
+        app.handle(Event::DurationSelected(GrantDuration::Hour1));
+        assert!(app.consent.branch().is_some(), "the first DurationSelected must arm the branch");
+        app.handle(Event::ConsentConfirmed { persist: false });
+        match recv_and_handle(&mut app, SHORT) {
+            Some(HandledEvent::ActionFinishedEnableOk) => {}
+            other => panic!("expected the first confirmed activation to grant exactly once, got {other:?}"),
+        }
+        // Drain the ActionCompleted trigger's own forced probe, exactly as
+        // `confirming_with_persist_writes_the_config_and_a_later_
+        // activation_skips_the_branch` does, before moving on.
+        assert!(matches!(recv_within(&rx, SHORT), Some(Event::ProbeFinished(_))));
+
+        // `persist: false` must never have set `acknowledged`.
+        assert!(app.consent.grant().is_none(), "an unpersisted confirmation must never acknowledge consent");
+
+        // 2) ~97 seconds later: a second, different duration picked under
+        // "Activate during…", with NO second confirmation in between.
+        app.handle(Event::DurationSelected(GrantDuration::Hours4));
+
+        assert!(
+            recv_within(&rx, NONE_EXPECTED).is_none(),
+            "a second DurationSelected must never dispatch a grant without its own confirmation"
+        );
+        assert!(
+            app.consent.branch().is_some(),
+            "the second DurationSelected must re-arm the branch instead of bypassing consent"
+        );
     }
 
     #[test]
@@ -1492,7 +1539,7 @@ mod tests {
 
         let posts = notify.posts.lock().unwrap();
         assert!(
-            posts.iter().any(|(_, s, _)| *s == OutcomeKind::UnexpiringGrant.text().0),
+            posts.iter().any(|(_, s, _)| *s == OutcomeKind::UnexpiringGrant.text(format::lang()).0),
             "a Passwordless probe following TimerUnscheduled must post the UnexpiringGrant warning: {posts:?}"
         );
         assert!(app.pending_escalation.is_none(), "the pending escalation must be consumed exactly once");
@@ -1509,7 +1556,7 @@ mod tests {
         app.handle_probe_finished(Ok(Probe::PasswordRequired), now());
 
         let posts = notify.posts.lock().unwrap();
-        assert!(!posts.iter().any(|(_, s, _)| *s == OutcomeKind::UnexpiringGrant.text().0));
+        assert!(!posts.iter().any(|(_, s, _)| *s == OutcomeKind::UnexpiringGrant.text(format::lang()).0));
     }
 
     // ---- 10.8: degraded startup announces exactly the right thing ----
@@ -1719,7 +1766,7 @@ mod tests {
         let posts = notify.posts.lock().unwrap();
         let warnings = posts
             .iter()
-            .filter(|(c, s, _)| *c == Category::Environment && s == "Could not watch for changes")
+            .filter(|(c, s, _)| *c == Category::Environment && s == format::Msg::NotifyWatchFailedSummary.text(format::lang()))
             .count();
         assert_eq!(
             warnings, 1,
@@ -1744,7 +1791,7 @@ mod tests {
         let posts = notify.posts.lock().unwrap();
         let warnings = posts
             .iter()
-            .filter(|(c, s, _)| *c == Category::Environment && s == "Could not watch for changes")
+            .filter(|(c, s, _)| *c == Category::Environment && s == format::Msg::NotifyWatchFailedSummary.text(format::lang()))
             .count();
         assert_eq!(
             warnings, 2,
@@ -1886,7 +1933,9 @@ mod tests {
 
         let posts = notify.posts.lock().unwrap();
         assert!(
-            posts.iter().any(|(c, s, _)| *c == Category::Environment && s == "Lost the change watch"),
+            posts
+                .iter()
+                .any(|(c, s, _)| *c == Category::Environment && s == format::Msg::NotifyWatchLostSummary.text(format::lang())),
             "losing the watch must post an observed warning through the notification port, not just \
              an eprintln! nothing reads: {posts:?}"
         );
