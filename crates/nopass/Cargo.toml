@@ -44,8 +44,13 @@ assets = [
     # The tray: the only unprivileged binary, on the user's PATH.
     ["../../target/release/nopass", "usr/bin/", "755"],
     # The helper: invoked only through pkexec, never directly by the user,
-    # which is why it lives in libexec rather than bin. Debian's path; the
-    # Arch package rewrites exec.path to /usr/lib/nopass/ instead.
+    # which is why it lives in libexec rather than bin. Every distribution
+    # ships it here. pkexec compares the resolved path of the program it
+    # runs against the policy's exec.path annotation, and that path also
+    # exists in nopass-core's HELPER_PATH constant, in nopass-cleanup.service
+    # and in debian/prerm — so moving it for one package means moving it in
+    # all four places or shipping an authorization failure. One path for
+    # deb, rpm and AUR alike is what keeps them in agreement.
     ["../../target/release/nopass-helper", "usr/libexec/", "755"],
     # The privilege boundary's declaration. polkit reads this directory.
     ["../../data/com.enfoquestic.nopass.policy", "usr/share/polkit-1/actions/", "644"],

@@ -97,11 +97,16 @@ the maintainer's decision.
   - `bash scripts/assert-single-reactor.sh` → PASS, exit 0.
   The task's doc-comment half of T2 landed here too, since it documents this exact test.
 
-- [ ] **T2 — Retire the abandoned Arch rewrite from `Cargo.toml`.**
-  `crates/nopass/Cargo.toml:47-48` still says the Arch package rewrites `exec.path` to
-  `/usr/lib/nopass/`, which the decision above abandons. Leaving it invites a future
-  maintainer to act on it. The test's doc comment was already corrected in T1.
-  Route: direct inline. Checks: `cargo test -p nopass-helper --test data_artifacts`.
+- [x] **T2 — Retire the abandoned Arch rewrite from `Cargo.toml`.** DONE.
+  The comment said the Arch package rewrites `exec.path` to `/usr/lib/nopass/`, which the
+  decision above abandons. Replaced with the reason the path is fixed: pkexec compares the
+  resolved program path against the annotation, and the same path also lives in
+  `HELPER_PATH`, `nopass-cleanup.service` and `debian/prerm`, so moving it for one package
+  means moving it in all four or shipping an authorization failure.
+  Route taken: direct inline. Documentation only — no behaviour to drive with a test, so no
+  RED phase applies; the path equality itself is already covered by T1's assertion.
+  **Observed evidence**: `cargo test -p nopass-helper --test data_artifacts` → `8 passed`;
+  `cargo metadata --no-deps` parses the manifest.
 
 - [ ] **T3 — Debian `postrm`, and split remove from purge.**
   No `postrm` exists; `prerm` does all cleanup on both `remove` and `purge`. That works but
@@ -155,14 +160,22 @@ the maintainer's decision.
 
 ## Progress
 
-1/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
+2/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
 
 | Task | Commit | Result |
 |---|---|---|
 | T1 | `aad40aa` | GREEN, non-vacuity proven by neutering |
+| T2 | see below | GREEN, documentation only |
 
-Last reviewed boundary: `f90605b` (the branch point).
+**Review**: RDD assess over `f90605b..d24c086` returned risk **high** (`process_boundary` /
+`shell_process` in `data_artifacts.rs`), `review_due: true`. The maintainer granted consent.
+Lineage `review-0316b3f603fdf3f3` ran all four lenses — risk, resilience, readability,
+reliability — reduced to **approved** with no correction required, and the authority was
+burned by exact acknowledgement (`gentle-ai.review-acknowledged/v1`, consumed revision
+`sha256:7ceed25f…`). Review is informational; delivery stays the maintainer's decision.
+
+Last reviewed boundary: `d24c086`.
 
 ## Next step
 
-T2 — remove the abandoned Arch rewrite comment from `crates/nopass/Cargo.toml:47-48`.
+T3 — add Debian `postrm` and split remove from purge. Delegated writer; its proof is T4.
