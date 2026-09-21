@@ -108,20 +108,55 @@ the maintainer's decision.
   **Observed evidence**: `cargo test -p nopass-helper --test data_artifacts` → `8 passed`;
   `cargo metadata --no-deps` parses the manifest.
 
-- [ ] **T3 — Debian `postrm`, and split remove from purge.** REORDERED AFTER T4.
-  Its only verification is T4's lane, so under strict TDD the harness comes first and T3 fixes
-  whatever the harness actually observes. Do not write it from a code reading.
-  No `postrm` exists; `prerm` does all cleanup on both `remove` and `purge`. That works but
-  conflates two Debian-standard hooks.
-  Route: delegated writer. Checks: covered by T4.
+- [x] **T3 — Debian `postrm`.** DONE. Reordered after T4 so it answered observed evidence.
+  **The exploration's framing was wrong, and is corrected here.** It said `prerm` conflates
+  `remove` and `purge` and that the two should be split. They should not. `prerm` MUST run on
+  both: leaving a live NOPASSWD rule after a plain `apt remove` is the one uninstall outcome
+  this package must never produce. And it must run in `prerm` rather than `postrm`, because
+  dpkg runs it before deleting files — the only window in which the helper can still revoke
+  its own rules. `prerm` is therefore unchanged.
+  The real gap was elsewhere: `/run/nopass` is created by `postinst` through
+  `systemd-tmpfiles`, so it is not a packaged file and dpkg never removes it. Added
+  `crates/nopass/debian/postrm`, removing it on `purge` only — which is what PRD §10 line 330
+  actually asks for.
+  Route taken: direct inline, one new file answering a gap the lane had already pinned.
+  **Observed evidence**: in T4's table — RED `FAIL (apt purge): /run/nopass still exists`,
+  GREEN `OK (apt purge): /run/nopass is gone`.
 
-- [ ] **T4 — Prove deb removal leaves no live sudoers rule.** IN PROGRESS — delegated writer.
-  `cargo deb` is not installed on this host; the lane builds the package inside the container
-  rather than polluting the host toolchain.
-  New container lane: install the built `.deb`, create a grant, `apt remove` and `apt purge`,
-  assert `/etc/sudoers.d/` holds no `90-nopass-*`. This is the observed proof the security
-  claim currently lacks.
-  Route: delegated writer. Checks: the new lane script exits 0.
+- [x] **T4 — Prove deb removal leaves no live sudoers rule.** DONE. Commit `c983241`.
+  New lane: `scripts/run-lane-deb.sh`, `tests/containers/Containerfile.deb`,
+  `tests/containers/fixtures/deb-lifecycle.sh`. Builds the real `.deb` inside a disposable
+  Debian container (`cargo deb` is NOT installed on this host; `cargo-deb` is pinned `^2`
+  because 3.8.0 needs a let-chain that rustc 1.85 rejects), installs it, grants through the
+  INSTALLED helper, then runs `apt remove` and `apt purge`, asserting no `90-nopass-*`
+  survives either. Uses `--until-reboot`: these containers ship no systemd on purpose, so a
+  timed grant would be rolled back on the spot and leave nothing to observe.
+  Route taken: delegated writer, then parent correction and parent-run verification. The
+  writer returned no usable report and was stopped; every result below was produced by the
+  parent.
+  **Two defects the parent found in the writer's output and fixed**:
+  1. The lane script exported `NOPASS_LANE_INJECT_ROGUE_RULE` while the fixture read
+     `NOPASS_LANE_SELFTEST_ROGUE_RULE`. The documented self-test command would have set
+     nothing, the self-test would never have run, and the lane would have reported PASS — a
+     non-vacuity proof that was itself vacuous. Unified on the `SELFTEST` name.
+  2. `cargo install cargo-deb` sat after `COPY . .`, so every one-line fixture edit rebuilt it
+     from scratch. Only `rust-toolchain.toml` is copied before the expensive layers now.
+  **Observed evidence**:
+
+  | Run | Outcome |
+  |---|---|
+  | clean lane | PASS, exit 0 — grant, remove, reinstall, grant, purge |
+  | `NOPASS_LANE_SELFTEST_ROGUE_RULE=1` | FAIL, exit 1 — the assertion is not vacuous |
+  | `assert_no_runtime_dir` added, no `postrm` | FAIL, exit 1 — `/run/nopass still exists` |
+  | direct probe, independent of the lane | `/run/nopass` present after install AND after purge |
+  | with `postrm` | PASS, exit 0 — `OK (apt purge): /run/nopass is gone` |
+  | `cargo test --workspace` | 653 passed, 1 ignored, 24 suites |
+  | `scripts/assert-single-reactor.sh` | PASS, exit 0 |
+  | host journal, fake audit records | 0 — the `9564af3` leak has not returned |
+
+  Honest limit: timers are NOT asserted here. These containers ship no systemd, so
+  `systemctl list-timers` has nothing to answer; Lane C step 17 owns that on a real machine.
+  The lane is deliberately NOT added to `openspec/config.yaml`'s gate_commands in this task.
 
 - [ ] **T5 — rpm packaging.** No `.spec` or `cargo-generate-rpm` metadata exists. Same asset
   layout and same helper path as deb, plus the rpm equivalents of `postinst`/`prerm`/`postrm`.
@@ -174,7 +209,7 @@ the maintainer's decision.
 
 ## Progress
 
-4/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
+6/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
 
 | Task | Commit | Result |
 |---|---|---|
@@ -193,9 +228,18 @@ branch. Maintainer granted consent. Lineage `review-f04a932e221945c0` ran all fo
 reduced to **approved** with no correction required, authority burned (consumed revision
 `sha256:69e6744d…`).
 
-Last reviewed boundary: `88d4e2b`.
+**Assess of `88d4e2b..031c478`**: risk medium (`executable_change` on the spec file),
+`review_due: false`, reason `under_budget` — 133 lines. Correctly ran no review.
+
+Last reviewed boundary: `88d4e2b`. A consent envelope for `f90605b..031c478`
+(`sha256:65ce8a41…`, lineage `review-ca7fd2406a9846fd`) was relayed and is still unanswered.
+
+**Delivery budget crossed**: the branch now stands at 623 insertions / 11 deletions against
+`f90605b`, past the ~400 authored-line slice budget. Strategy is `ask-on-risk`, so a chain
+strategy — `stacked-to-main` or `feature-branch-chain` — must be asked for once before the
+next commit.
 
 ## Next step
 
-T4 is running as a delegated writer. When it reports, read its observed evidence, then do T3
-against what the lane actually proved — not against a code reading. T5–T7 and T10 follow.
+Ask the maintainer for a chain strategy — the delivery budget is crossed. Then T5 (rpm
+packaging), which can reuse this lane's shape, followed by T6, T7 and T10.
