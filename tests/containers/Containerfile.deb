@@ -1,0 +1,85 @@
+# Deb package lifecycle lane (m4-packaging-and-qa T4; PRD §10 line 330;
+# tests/manual/README.md item 18's automated counterpart). Builds the real
+# `.deb` from the workspace inside this container -- cargo-deb is NOT
+# installed on the host, so it is installed here, never on the host -- then
+# scripts/run-lane-deb.sh drives install/grant/remove/purge against a real
+# dpkg/apt, a real /etc/sudoers.d, and the real Debian maintainer scripts
+# shipped in crates/nopass/debian/. This is the observed proof that removing
+# the package never leaves a live NOPASSWD rule behind (m4-packaging-and-qa
+# decision log, T4): before this lane existed, that claim was a code-reading
+# inference over crates/nopass/debian/prerm, never an observed fact.
+#
+# Same base image and toolchain-install recipe as Containerfile.debian; this
+# Containerfile additionally installs cargo-deb and bakes the `.deb` build
+# itself into the image, since building it does not depend on anything the
+# lane script exercises at runtime (useradd, grant, apt remove/purge).
+#
+# `podman` is absent on the machine this was authored against; `docker`
+# 29.8.1 is present. scripts/run-lane-deb.sh detects the runtime, not this
+# file.
+
+FROM debian:12-slim
+
+# `sudo`/`passwd`: same as Containerfile.debian -- `visudo` and
+# `useradd`/`userdel` for the disposable test user this lane creates.
+# `policykit-1`: the deb's own declared dependency
+# (`Depends: $auto, sudo, policykit-1 | polkit` in
+# crates/nopass/Cargo.toml's [package.metadata.deb]) -- installed here so
+# `apt install <local .deb>` at container-run time never needs network
+# access to resolve it.
+# `build-essential`/`pkg-config`: crates with a build.rs, same as every
+# other Containerfile in this tree.
+# The apt lists are kept (not removed after this layer, unlike
+# Containerfile.debian) because the lane script runs `apt-get update` and a
+# real `apt-get install`/`remove`/`purge` cycle at container-run time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        sudo \
+        passwd \
+        policykit-1 \
+        ca-certificates \
+        curl \
+        build-essential \
+        pkg-config
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# `--default-toolchain none`: the pinned toolchain comes from
+# rust-toolchain.toml once the workspace is copied in below -- see
+# Containerfile.debian's identical comment.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain none --profile minimal
+
+WORKDIR /workspace
+
+# Copy only the toolchain pin first, so installing the toolchain and
+# cargo-deb below land in layers that survive an edit to the lane fixture
+# or to any source file. With `COPY . .` first, every one-line change to
+# deb-lifecycle.sh re-ran the cargo-deb build from scratch, which made
+# iterating on this lane cost minutes per run for no reason.
+COPY rust-toolchain.toml .
+RUN rustup show
+
+# cargo-deb is NOT installed on the host that authored this lane
+# (m4-packaging-and-qa T4 brief) -- installed here, inside the disposable
+# image, never on the host. Pinned below "^2" (not the newest 3.x): 3.8.0
+# uses a let-chain (`if let ... && ...`), a syntax stabilized only in
+# rustc 1.88, and this workspace's rust-toolchain.toml deliberately pins
+# 1.85 for the target distributions -- observed by trying the unpinned
+# `cargo install cargo-deb --locked` first, which failed to even compile
+# with `E0658: let expressions in this position are unstable`.
+RUN cargo install cargo-deb --version "^2" --locked
+
+COPY . .
+RUN cargo fetch --locked
+
+# Build both release binaries the package's assets list references
+# (crates/nopass/Cargo.toml [package.metadata.deb] assets: `nopass` from
+# this crate and `nopass-helper` from the sibling crate, both under the
+# shared workspace target/release/) before invoking cargo-deb, then package
+# with --no-build so cargo-deb only packages what was just built instead of
+# re-deriving its own narrower build invocation.
+RUN cargo build --release --workspace \
+    && cargo deb -p nopass --no-build \
+    && ls target/debian/*.deb

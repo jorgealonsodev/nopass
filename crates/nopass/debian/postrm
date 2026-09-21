@@ -1,0 +1,21 @@
+#!/bin/sh
+# Final cleanup, run after dpkg has removed the package's own files.
+#
+# prerm owns everything that needs the helper binary to still be on disk:
+# revoking live grants, stopping expiry timers, disabling the cleanup
+# service. dpkg runs prerm before it deletes files, which is the only
+# window in which the helper can revoke its own rules, so that work
+# cannot move here. It also runs on both `remove` and `purge`, and must:
+# leaving a live NOPASSWD rule behind after a plain `apt remove` would be
+# the one uninstall outcome this package must never produce.
+#
+# What is left for purge is the runtime directory. postinst creates
+# /run/nopass through systemd-tmpfiles, so it is not a packaged file and
+# dpkg never removes it. It was observed surviving `apt purge` — see
+# scripts/run-lane-deb.sh, which now asserts it is gone (PRD §10 line 330:
+# no rule file, no timer, no /run/nopass after purging).
+set -e
+if [ "$1" = "purge" ]; then
+    rm -rf /run/nopass
+fi
+exit 0
