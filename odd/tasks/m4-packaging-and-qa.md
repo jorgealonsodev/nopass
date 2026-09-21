@@ -108,12 +108,16 @@ the maintainer's decision.
   **Observed evidence**: `cargo test -p nopass-helper --test data_artifacts` → `8 passed`;
   `cargo metadata --no-deps` parses the manifest.
 
-- [ ] **T3 — Debian `postrm`, and split remove from purge.**
+- [ ] **T3 — Debian `postrm`, and split remove from purge.** REORDERED AFTER T4.
+  Its only verification is T4's lane, so under strict TDD the harness comes first and T3 fixes
+  whatever the harness actually observes. Do not write it from a code reading.
   No `postrm` exists; `prerm` does all cleanup on both `remove` and `purge`. That works but
   conflates two Debian-standard hooks.
   Route: delegated writer. Checks: covered by T4.
 
-- [ ] **T4 — Prove deb removal leaves no live sudoers rule.**
+- [ ] **T4 — Prove deb removal leaves no live sudoers rule.** IN PROGRESS — delegated writer.
+  `cargo deb` is not installed on this host; the lane builds the package inside the container
+  rather than polluting the host toolchain.
   New container lane: install the built `.deb`, create a grant, `apt remove` and `apt purge`,
   assert `/etc/sudoers.d/` holds no `90-nopass-*`. This is the observed proof the security
   claim currently lacks.
@@ -130,17 +134,27 @@ the maintainer's decision.
   A comment must state why the path is not Arch-idiomatic, so the decision is not silently reversed.
   Route: direct inline. Checks: structural test asserting the PKGBUILD's install path matches the constant.
 
-- [ ] **T8 — Close the suspend/resume claim-vs-proof gap.**
-  `openspec/specs/expiry-policy/spec.md:5` claims robustness across suspend/resume; no
-  requirement or scenario exercises it, and no container can suspend. Either add a scenario
-  traceable to the manual QA item from T9, or narrow the Purpose line to what is actually proven.
-  Route: direct inline. Checks: spec readback.
+- [x] **T8 — Close the suspend/resume claim-vs-proof gap.** DONE.
+  The Purpose line claimed robustness across suspend/resume with no requirement behind it.
+  Reboot turned out to be genuinely covered by "Boot-Time Cleanup Sweep"; suspend was not.
+  Added **Requirement: Grant Expiry Across Suspend and Resume** with two scenarios — one pinned
+  by `cargo test`, one by Lane C step 16 — so the Purpose line is now true rather than narrowed.
+  Route taken: direct inline.
+  **Observed evidence**: the automated scenario cites
+  `timer::tests::schedule_builds_the_exact_pinned_systemd_run_argv_in_order`, and that pin was
+  proven non-vacuous by injecting `--on-active=15min` into `schedule`:
+  `FAILED. 4 passed; 2 failed`, then `ok. 6 passed` once removed. The scenario's wording was
+  corrected mid-task to cite that exact test instead of asserting an absence no test checked.
 
-- [ ] **T9 — Add the missing Lane C manual QA items.**
-  `tests/manual/README.md` has no suspend/resume item (PRD line 325: activate 15 min, suspend
-  30 min, resume), no reboot item, and no package install/uninstall item (PRD §10 line 330).
-  These are human-executed; adding them is the deliverable, running them is the maintainer's.
-  Route: direct inline. Checks: structural readback.
+- [x] **T9 — Add the missing Lane C manual QA items.** DONE.
+  Added steps 16 (15-min grant across a real 30-minute suspend, PRD line 325), 17 ("until
+  reboot" grant absent at a TTY before desktop login, PRD line 326) and 18 (deb remove and
+  purge leave no rule, no timer, no `/run/nopass`, PRD §10 line 330), each in the file's
+  existing Do/Pass/Spec shape, plus their three rows in the result table.
+  Route taken: direct inline. These are human-executed: writing them is the deliverable,
+  running them stays the maintainer's.
+  **Observed evidence**: structural readback — steps 16/17/18 present at lines 379, 401, 418;
+  result table now carries rows 16–18.
 
 - [ ] **T10 — Ship an end-user README.**
   The repository has no top-level `README.md`, so a user who installs the `.deb` and runs
@@ -160,7 +174,7 @@ the maintainer's decision.
 
 ## Progress
 
-2/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
+4/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
 
 | Task | Commit | Result |
 |---|---|---|
@@ -174,8 +188,14 @@ reliability — reduced to **approved** with no correction required, and the aut
 burned by exact acknowledgement (`gentle-ai.review-acknowledged/v1`, consumed revision
 `sha256:7ceed25f…`). Review is informational; delivery stays the maintainer's decision.
 
-Last reviewed boundary: `d24c086`.
+**Review of `f90605b..88d4e2b`**: the stop hook opened a wider candidate covering the whole
+branch. Maintainer granted consent. Lineage `review-f04a932e221945c0` ran all four lenses,
+reduced to **approved** with no correction required, authority burned (consumed revision
+`sha256:69e6744d…`).
+
+Last reviewed boundary: `88d4e2b`.
 
 ## Next step
 
-T3 — add Debian `postrm` and split remove from purge. Delegated writer; its proof is T4.
+T4 is running as a delegated writer. When it reports, read its observed evidence, then do T3
+against what the lane actually proved — not against a code reading. T5–T7 and T10 follow.

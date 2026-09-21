@@ -107,6 +107,25 @@ Before creating a new expiry timer for a uid, the system MUST stop any existing 
 - THEN the helper treats it as already-expired and exits 0
 - Testable via: `cargo test`
 
+### Requirement: Grant Expiry Across Suspend and Resume
+
+A temporary grant's transient timer MUST be scheduled against the realtime clock, so that the
+grant expires on the wall-clock instant it was given, regardless of how long the machine spent
+suspended. The system MUST NOT schedule it against a monotonic clock, which pauses while the
+machine is asleep and would let a grant outlive its stated duration by the length of the suspend.
+
+#### Scenario: The timer is scheduled on the realtime clock, not the monotonic one
+- GIVEN a temporary grant of any duration
+- WHEN `schedule` builds its `systemd-run` argv
+- THEN the argv matches the pinned form exactly, carrying `--on-calendar=<RFC 3339 UTC>` and no other schedule flag, so adding a monotonic `--on-active` breaks the pin
+- Testable via: `cargo test` — `timer::tests::schedule_builds_the_exact_pinned_systemd_run_argv_in_order`. Verified non-vacuous on 2026-09-21 by injecting `--on-active=15min` into `schedule`: two timer tests failed, and both passed again once it was removed.
+
+#### Scenario: A grant does not survive a suspend longer than its duration
+- GIVEN a 15-minute grant on a real machine
+- WHEN the machine is suspended for 30 minutes and then resumed
+- THEN the rule file is gone within one minute of resuming, and the expiry notification is shown
+- Testable via: Lane C manual step 16 — no automated lane can suspend a machine, so this scenario is proven by a human and recorded in the run's result table, never inferred
+
 ### Requirement: Boot-Time Cleanup Sweep
 
 `expire --boot` MUST additionally treat `reboot`-marked rules as expired and, when invoked without `--uid`, MUST sweep every `90-nopass-*` rule file, deleting each whose header indicates `reboot` or a past epoch, and leaving `never` or future-epoch rules untouched. At least one of `--uid` or `--boot` MUST be present on `expire`.

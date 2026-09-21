@@ -376,6 +376,65 @@ menu would miss exactly the regression this item was added for.
   `d078207` ("move the notification text into the catalogue it belongs
   to").
 
+### 16. A grant expires across a real suspend and resume
+
+The timer is a `systemd-run --on-calendar` realtime timer, chosen over
+`--on-active` precisely so a grant cannot outlive a suspend: a monotonic
+timer pauses while the machine is asleep, so an 8-hour grant would survive
+a 10-hour suspend, while a realtime calendar timer fires as soon as the
+wall-clock instant has passed. That reasoning is recorded in M1's
+`design.md:458` and restated in the PRD as a closed audit finding (A2),
+but no automated lane can suspend a machine — a container cannot sleep.
+This step is the only place the decision is actually exercised.
+
+- **Do**: enable a 15-minute grant and note the wall-clock time. Confirm
+  `/etc/sudoers.d/90-nopass-<uid>` exists. Suspend the machine for at
+  least 30 minutes — a real suspend-to-RAM, not a locked screen. Resume,
+  and watch for up to one minute without touching the tray.
+- **Pass**: within one minute of resuming, `/etc/sudoers.d/` holds no
+  `90-nopass-*` file, the icon has returned to its inactive state, and the
+  expiry notification was shown. Record the actual elapsed time between
+  resume and the rule disappearing.
+- Spec: `expiry-policy`, "A grant expires across suspend and resume";
+  PRD §10 line 325; M1 `design.md:458` (realtime over monotonic).
+
+### 17. A "until reboot" grant is gone after a real reboot
+
+`nopass-cleanup.service` sweeps at boot, ordered before
+`systemd-user-sessions.service` and `display-manager.service` so the rule
+is gone before anyone can log in and use it. The root container lane
+proves the sweep logic; only a real reboot proves the ordering holds on a
+real init.
+
+- **Do**: enable a grant with the "until reboot" duration. Confirm
+  `/etc/sudoers.d/90-nopass-<uid>` exists and its `nopass-expires` header
+  reads `reboot`. Reboot the machine. Before logging in to the desktop,
+  switch to a TTY and inspect `/etc/sudoers.d/`.
+- **Pass**: no `90-nopass-*` file exists at the TTY, before any desktop
+  login. Record whether `systemctl status nopass-cleanup.service` shows
+  the unit ran and exited 0.
+- Spec: `expiry-policy`, "Boot-Time Cleanup Sweep"; PRD §10 line 326.
+
+### 18. The package installs and uninstalls without leaving a live rule
+
+The automated lane proves this inside a container. This step proves it on
+a real desktop, where a live session, a running tray and a real systemd
+are all present — the conditions the container cannot reproduce.
+
+- **Do**: install the built `.deb` with `apt install ./nopass_*.deb`.
+  Start the tray and enable a grant; confirm `/etc/sudoers.d/90-nopass-<uid>`
+  exists. Without disabling it first, run `apt remove nopass`. Inspect
+  `/etc/sudoers.d/`, `systemctl list-timers 'nopass-expire-*'` and
+  `/run/nopass/`. Reinstall, grant again, and this time run
+  `apt purge nopass`; inspect the same three places.
+- **Pass**: after both `remove` and `purge`, `/etc/sudoers.d/` holds no
+  `90-nopass-*` file, no `nopass-expire-*` timer is listed, and `sudo`
+  still authenticates normally with a password. After `purge`,
+  `/run/nopass/` is gone as well. Record each of the three observations
+  separately for both removal modes.
+- Spec: PRD §10 line 330. Automated counterpart: the deb package lane in
+  `../containers/README.md`.
+
 ## Result table
 
 Fill in once per run. One row per checklist item above; use the exact
@@ -413,6 +472,9 @@ a result).
 | 13 | First activation observed exactly once, never re-presented | | |
 | 14 | Autostart entry survives a real logout/login | | |
 | 15 | Spanish rendering — menu and notifications | | |
+| 16 | 15-min grant revoked ≤ 1 min after a real 30-min suspend | | |
+| 17 | "Until reboot" grant absent at a TTY before desktop login | | |
+| 18 | deb remove and purge leave no rule, no timer, no /run/nopass | | |
 
 ## Next step
 
