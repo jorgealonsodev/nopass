@@ -59,18 +59,25 @@ fn policy_has_required_allow_defaults() {
     );
 }
 
-/// `exec.path` must point at the M1 default helper path. Packaging (M4)
-/// rewrites this value for Arch (`/usr/lib/nopass/nopass-helper`); a future
-/// mismatch against that rewritten path is packaging's concern, not a
-/// regression of this file.
+/// `exec.path` must name the very path the binaries were compiled to invoke.
+/// pkexec resolves the program it is asked to run and compares it against
+/// this annotation, so a disagreement between the shipped policy file and
+/// `nopass_core::paths::HELPER_PATH` is a hard authorization failure rather
+/// than cosmetic drift. Asserting against the constant — not a second
+/// hardcoded copy of the same literal — is what lets this test see that
+/// drift at all. `polkit_contract.rs` checks the same equality against a
+/// live authority's parsed value; this one runs unprivileged, every time.
 #[test]
-fn policy_exec_path_is_default_helper_path() {
+fn policy_exec_path_annotation_matches_the_compiled_helper_path() {
     let policy = data_file("com.enfoquestic.nopass.policy");
+    let expected = format!(
+        r#"<annotate key="org.freedesktop.policykit.exec.path">{}</annotate>"#,
+        nopass_core::paths::HELPER_PATH
+    );
     assert!(
-        policy.contains(
-            r#"<annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/nopass-helper</annotate>"#
-        ),
-        "exec.path annotation must point at the default /usr/libexec/nopass-helper"
+        policy.contains(&expected),
+        "expected `{expected}` in the shipped policy file; the file and \
+         nopass_core::paths::HELPER_PATH have drifted apart:\n{policy}"
     );
 }
 
