@@ -296,6 +296,12 @@ PASS:
   enablement inspection was skipped because the container had no running systemd manager.
 - `git diff --check` → PASS.
 
+**Final native review status**: inspected the clean publish worktree over `origin/main..HEAD`; the
+candidate was high risk (572 changed lines, executable shell lane, process-boundary packaging
+changes). START returned a candidate-scoped consent decline with no lineage created, so no native
+review authority was burned. The independent verifier result above is the final verification record
+for this candidate.
+
 ## Next step
 
 Push the completed feature branch and fast-forward `main` so the work is available from another machine.
