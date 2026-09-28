@@ -33,6 +33,7 @@ package() {
     install -m644 data/icons/*.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/"
 
     install -Dm644 data/nopass.desktop "$pkgdir/usr/share/applications/nopass.desktop"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/nopass/README.md"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
     # Cleanup scheduling and autostart are user-owned; do not enable the

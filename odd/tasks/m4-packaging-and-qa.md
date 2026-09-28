@@ -221,11 +221,23 @@ the maintainer's decision.
   **Observed evidence**: structural readback — steps 16/17/18 present at lines 379, 401, 418;
   result table now carries rows 16–18.
 
-- [ ] **T10 — Ship an end-user README.**
-  The repository has no top-level `README.md`, so a user who installs the `.deb` and runs
-  `nopass` gets nothing pointing at `docs/headless.md`, the tray's menu semantics, or how to
-  report an issue. Write it and install it in all three packages.
-  Route: delegated writer. Checks: structural readback; asset present in the built package.
+- [x] **T10 — Ship an end-user README.** DONE. Added root `README.md` covering the tray,
+  headless grant/inspect/revoke commands, autostart and cleanup as user-owned choices,
+  troubleshooting, `/usr/libexec/nopass-helper`, `docs/headless.md`, and issue-reporting basics.
+  Packaged it at `/usr/share/doc/nopass/README.md` for Debian, RPM and AUR, and added focused
+  structural tests plus Debian/RPM container payload assertions.
+  Route: delegated writer plus independent verification. Strict-TDD evidence: RED — the new
+  focused docs test failed before README/package assets existed; GREEN — focused docs, RPM and
+  AUR packaging tests passed after implementation. Triangulation: a temporary heading change made
+  the README section guard fail, then was reverted.
+  **Observed evidence**: `cargo test -p nopass --test package_docs` → 2 passed;
+  `cargo test -p nopass --test rpm_packaging --test aur_packaging` → 4 passed;
+  `bash -n PKGBUILD` and `git diff --check` → PASS; `docker builder prune -f` reclaimed 7.77 GB;
+  `docker build -f tests/containers/Containerfile.deb -t nopass-test-deb .` → PASS and
+  `dpkg-deb --contents` listed `usr/share/doc/nopass/README.md`; `docker build -f
+  tests/containers/Containerfile.rpm -t nopass-test-rpm .` → PASS and `rpm -qpl` listed
+  `/usr/share/doc/nopass/README.md`. Independent verifier reran the focused non-Docker checks
+  and passed the README/package claims.
 
 ## Acceptance criteria
 
@@ -239,7 +251,7 @@ the maintainer's decision.
 
 ## Progress
 
-9/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
+10/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
 
 | Task | Commit | Result |
 |---|---|---|
@@ -250,6 +262,7 @@ the maintainer's decision.
 | T5 | `931cc46`, `19a40ad` | GREEN, RPM package construction proof |
 | T6 | `ca794ab` | GREEN, RPM lifecycle proof |
 | T7 | `500bda3` | GREEN, AUR package and structural guard |
+| T10 | current work-unit commit | GREEN, README packaged in deb/RPM/AUR |
 
 **Review**: RDD assess over `f90605b..d24c086` returned risk **high** (`process_boundary` /
 `shell_process` in `data_artifacts.rs`), `review_due: true`. The maintainer granted consent.
@@ -276,5 +289,4 @@ next commit.
 
 ## Next step
 
-Continue with T10, using the current no-more-questions instruction. Revisit the chain
-strategy only if a publish/PR decision is needed.
+Run final gates, commit the README work-unit, then publish/merge according to ordinary repository policy.

@@ -64,6 +64,7 @@ assets = [
     # to launch it from a menu. StartupNotify is false because a tray item
     # never maps a window, so a launcher waiting for one would spin.
     ["../../data/nopass.desktop", "usr/share/applications/", "644"],
+    ["../../README.md", "usr/share/doc/nopass/README.md", "644"],
 ]
 # Autostart is the user's decision, not the package's (RF-09), so no
 # systemd-enable and no autostart entry are shipped here.
@@ -81,6 +82,7 @@ assets = [
     { source = "../../data/nopass-cleanup.service", dest = "/usr/lib/systemd/system/nopass-cleanup.service", mode = "644" },
     { source = "../../data/icons/*.svg", dest = "/usr/share/icons/hicolor/scalable/apps/", mode = "644" },
     { source = "../../data/nopass.desktop", dest = "/usr/share/applications/nopass.desktop", mode = "644" },
+    { source = "../../README.md", dest = "/usr/share/doc/nopass/README.md", mode = "644" },
 ]
 post_install_script = "rpm/postinst"
 pre_uninstall_script = "rpm/prerm"

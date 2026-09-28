@@ -52,6 +52,7 @@ fn aur_pkgbuild_preserves_shared_helper_path_and_user_owned_activation() {
         "install -Dm644 data/nopass-cleanup.service \"$pkgdir/usr/lib/systemd/system/nopass-cleanup.service\"",
         "install -m644 data/icons/*.svg \"$pkgdir/usr/share/icons/hicolor/scalable/apps/\"",
         "install -Dm644 data/nopass.desktop \"$pkgdir/usr/share/applications/nopass.desktop\"",
+        "install -Dm644 README.md \"$pkgdir/usr/share/doc/nopass/README.md\"",
         "install -Dm644 LICENSE \"$pkgdir/usr/share/licenses/$pkgname/LICENSE\"",
     ] {
         assert!(contents.contains(required), "PKGBUILD is missing: {required}");

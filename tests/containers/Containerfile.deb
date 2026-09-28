@@ -80,6 +80,12 @@ RUN cargo fetch --locked
 # shared workspace target/release/) before invoking cargo-deb, then package
 # with --no-build so cargo-deb only packages what was just built instead of
 # re-deriving its own narrower build invocation.
-RUN cargo build --release --workspace \
-    && cargo deb -p nopass --no-build \
-    && ls target/debian/*.deb
+RUN set -eu; \
+    cargo build --release --workspace; \
+    cargo deb -p nopass --no-build; \
+    deb_file="$(find target/debian -type f -name '*.deb' -print -quit)"; \
+    test -n "$deb_file"; \
+    echo "Debian package payload ($deb_file):"; \
+    payload="$(dpkg-deb --contents "$deb_file")"; \
+    printf '%s\n' "$payload"; \
+    printf '%s\n' "$payload" | grep -Fq 'usr/share/doc/nopass/README.md'

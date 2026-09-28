@@ -48,7 +48,8 @@ RUN set -eu; \
         /usr/lib/tmpfiles.d/nopass.conf \
         /usr/lib/systemd/system/nopass-cleanup.service \
         /usr/share/icons/hicolor/scalable/apps/nopass-locked.svg \
-        /usr/share/applications/nopass.desktop; do \
+        /usr/share/applications/nopass.desktop \
+        /usr/share/doc/nopass/README.md; do \
         printf '%s\n' "$payload" | grep -Fx "$path" >/dev/null; \
     done; \
     scriptlets="$(rpm -qp --scripts "$rpm_file")"; \

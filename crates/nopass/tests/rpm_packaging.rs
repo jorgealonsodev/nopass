@@ -95,6 +95,10 @@ fn rpm_assets_match_the_debian_layout_and_shared_helper_path() {
             "../../data/nopass.desktop".to_owned(),
             ("/usr/share/applications/nopass.desktop".to_owned(), "644".to_owned()),
         ),
+        (
+            "../../README.md".to_owned(),
+            ("/usr/share/doc/nopass/README.md".to_owned(), "644".to_owned()),
+        ),
     ]);
 
     assert_eq!(actual, expected, "RPM assets must preserve the Debian layout");
