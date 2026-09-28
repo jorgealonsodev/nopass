@@ -174,7 +174,7 @@ the maintainer's decision.
   test failed before the correction and passed afterward (1 passed); `sh -n` and `git diff --check`
   also passed.
 
-- [x] **T6 — Prove rpm removal leaves no live sudoers rule.** DONE in this work-unit commit.
+- [x] **T6 — Prove rpm removal leaves no live sudoers rule.** DONE. Commit `ca794ab`.
   Added `scripts/run-lane-rpm.sh`, `tests/containers/fixtures/rpm-lifecycle.sh`, and a structural
   test pinning the runner/fixture wiring and shared self-test environment variable. The Fedora
   lane builds the real RPM with `Containerfile.rpm`, installs it with `dnf`, grants through
@@ -248,7 +248,7 @@ the maintainer's decision.
 | T3 | `12dc845` | GREEN, deb `postrm` evidence reconciled |
 | T4 | `c983241` | GREEN, Debian lifecycle proof |
 | T5 | `931cc46`, `19a40ad` | GREEN, RPM package construction proof |
-| T6 | current work-unit commit | GREEN, RPM lifecycle proof |
+| T6 | `ca794ab` | GREEN, RPM lifecycle proof |
 
 **Review**: RDD assess over `f90605b..d24c086` returned risk **high** (`process_boundary` /
 `shell_process` in `data_artifacts.rs`), `review_due: true`. The maintainer granted consent.
