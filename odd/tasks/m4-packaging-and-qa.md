@@ -174,8 +174,26 @@ the maintainer's decision.
   test failed before the correction and passed afterward (1 passed); `sh -n` and `git diff --check`
   also passed.
 
-- [ ] **T6 — Prove rpm removal leaves no live sudoers rule.** T4's lane, for Fedora/rpm.
-  Route: delegated writer. Checks: the new lane script exits 0.
+- [x] **T6 — Prove rpm removal leaves no live sudoers rule.** DONE in this work-unit commit.
+  Added `scripts/run-lane-rpm.sh`, `tests/containers/fixtures/rpm-lifecycle.sh`, and a structural
+  test pinning the runner/fixture wiring and shared self-test environment variable. The Fedora
+  lane builds the real RPM with `Containerfile.rpm`, installs it with `dnf`, grants through
+  `/usr/libexec/nopass-helper`, confirms the live rule exists, removes the package with `dnf`,
+  then asserts no `/etc/sudoers.d/90-nopass-*` rule remains. It also checks service enablement
+  when a systemd manager answers; this container's manager was unavailable, so that conditional
+  check was skipped honestly. No helper or service policy was changed.
+  Route: delegated writer. Strict-TDD evidence: the structural test failed before the runner
+  existed, then passed after implementation.
+  **Observed evidence**:
+  - `cargo test -p nopass --test rpm_packaging` → 3 passed.
+  - `bash scripts/run-lane-rpm.sh` → PASS, exit 0; the real RPM installed, helper grant created
+    `/etc/sudoers.d/90-nopass-1000`, `dnf remove` ran, and no live NoPass rule remained.
+  - `NOPASS_LANE_SELFTEST_ROGUE_RULE=1 bash scripts/run-lane-rpm.sh` → expected FAIL, exit 1;
+    the rogue `/etc/sudoers.d/90-nopass-selftest` was detected.
+  - `bash -n scripts/run-lane-rpm.sh tests/containers/fixtures/rpm-lifecycle.sh` and
+    `git diff --check` → PASS.
+  - Parent verification also ran `docker builder prune -f` before re-running the lane; Docker
+    reclaimed 883.9 MB and the RPM lifecycle still passed.
 
 - [ ] **T7 — AUR `PKGBUILD`.** Single `/usr/libexec/nopass-helper` path, no rewrite, no symlink.
   A comment must state why the path is not Arch-idiomatic, so the decision is not silently reversed.
@@ -221,12 +239,16 @@ the maintainer's decision.
 
 ## Progress
 
-7/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
+8/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
 
 | Task | Commit | Result |
 |---|---|---|
 | T1 | `aad40aa` | GREEN, non-vacuity proven by neutering |
-| T2 | see below | GREEN, documentation only |
+| T2 | `031c478` | GREEN, documentation only |
+| T3 | `12dc845` | GREEN, deb `postrm` evidence reconciled |
+| T4 | `c983241` | GREEN, Debian lifecycle proof |
+| T5 | `931cc46`, `19a40ad` | GREEN, RPM package construction proof |
+| T6 | current work-unit commit | GREEN, RPM lifecycle proof |
 
 **Review**: RDD assess over `f90605b..d24c086` returned risk **high** (`process_boundary` /
 `shell_process` in `data_artifacts.rs`), `review_due: true`. The maintainer granted consent.
@@ -253,5 +275,5 @@ next commit.
 
 ## Next step
 
-Ask the maintainer for a chain strategy — the delivery budget is crossed. Then T6 (rpm
-lifecycle proof), followed by T7 and T10.
+Continue with T7, then T10, using the current no-more-questions instruction. Revisit the
+chain strategy only if a publish/PR decision is needed.

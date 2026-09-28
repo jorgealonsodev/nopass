@@ -148,3 +148,35 @@ fn rpm_scriptlets_follow_the_debian_lifecycle_without_enabling_autostart() {
         }
     }
 }
+
+#[test]
+fn rpm_lifecycle_lane_wires_runner_and_fixture_to_the_same_selftest_toggle() {
+    const SELFTEST_ENV: &str = "NOPASS_LANE_SELFTEST_ROGUE_RULE";
+    let root = crate_root().join("../..");
+    let runner_path = root.join("scripts/run-lane-rpm.sh");
+    let fixture_path = root.join("tests/containers/fixtures/rpm-lifecycle.sh");
+    let runner = std::fs::read_to_string(&runner_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", runner_path.display()));
+    let fixture = std::fs::read_to_string(&fixture_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", fixture_path.display()));
+
+    assert!(runner.contains("command -v docker"), "runner must detect Docker");
+    assert!(runner.contains("command -v podman"), "runner must detect Podman");
+    assert!(runner.contains("Containerfile.rpm"), "runner must build the RPM image");
+    assert!(
+        runner.contains("tests/containers/fixtures/rpm-lifecycle.sh"),
+        "runner must execute the RPM lifecycle fixture"
+    );
+    assert!(
+        runner.contains(&format!("-e {SELFTEST_ENV}")),
+        "runner must pass the self-test toggle into the container"
+    );
+    assert!(
+        fixture.contains(&format!("${{{SELFTEST_ENV}:-0}}")),
+        "fixture must use the same self-test toggle"
+    );
+    assert!(
+        fixture.contains("/etc/sudoers.d/90-nopass-"),
+        "fixture must inspect live NoPass sudoers rules"
+    );
+}
