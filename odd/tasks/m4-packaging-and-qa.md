@@ -195,9 +195,9 @@ the maintainer's decision.
   - Parent verification also ran `docker builder prune -f` before re-running the lane; Docker
     reclaimed 883.9 MB and the RPM lifecycle still passed.
 
-- [ ] **T7 — AUR `PKGBUILD`.** Single `/usr/libexec/nopass-helper` path, no rewrite, no symlink.
-  A comment must state why the path is not Arch-idiomatic, so the decision is not silently reversed.
-  Route: direct inline. Checks: structural test asserting the PKGBUILD's install path matches the constant.
+- [x] **T7 — AUR `PKGBUILD`.** DONE. Added a GitHub `v0.1.0` source-tag build with Cargo and package installs for both binaries, policy, tmpfiles, cleanup service, icons, desktop file and license. The helper remains at the shared compiled path, with an Arch/pkexec rationale comment; no symlink, service enablement or autostart entry is packaged. Added a structural test that compares the helper install destination to `nopass_core::paths::HELPER_PATH` and guards the package contents.
+  Route: delegated writer plus independent verification. Strict-TDD evidence: RED — the new test failed because `PKGBUILD` did not exist; GREEN — the final focused test passed. Triangulation: changing the helper destination to `/usr/lib/nopass/nopass-helper` failed the constant comparison, and an injected `ln -s` command failed the symlink guard; both probes were reverted.
+  **Observed evidence**: `cargo test -p nopass --test aur_packaging` → 1 passed; `bash -n PKGBUILD` → PASS; `git diff --check` → PASS. Independent verifier reran those focused checks and passed the packaging/test claims; its only blocker was a stale next-step note, which the parent corrected and re-read.
 
 - [x] **T8 — Close the suspend/resume claim-vs-proof gap.** DONE.
   The Purpose line claimed robustness across suspend/resume with no requirement behind it.
@@ -239,7 +239,7 @@ the maintainer's decision.
 
 ## Progress
 
-8/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
+9/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
 
 | Task | Commit | Result |
 |---|---|---|
@@ -249,6 +249,7 @@ the maintainer's decision.
 | T4 | `c983241` | GREEN, Debian lifecycle proof |
 | T5 | `931cc46`, `19a40ad` | GREEN, RPM package construction proof |
 | T6 | `ca794ab` | GREEN, RPM lifecycle proof |
+| T7 | current work-unit commit | GREEN, AUR package and structural guard |
 
 **Review**: RDD assess over `f90605b..d24c086` returned risk **high** (`process_boundary` /
 `shell_process` in `data_artifacts.rs`), `review_due: true`. The maintainer granted consent.
@@ -275,5 +276,5 @@ next commit.
 
 ## Next step
 
-Continue with T7, then T10, using the current no-more-questions instruction. Revisit the
-chain strategy only if a publish/PR decision is needed.
+Continue with T10, using the current no-more-questions instruction. Revisit the chain
+strategy only if a publish/PR decision is needed.
