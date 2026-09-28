@@ -262,7 +262,7 @@ the maintainer's decision.
 | T5 | `931cc46`, `19a40ad` | GREEN, RPM package construction proof |
 | T6 | `ca794ab` | GREEN, RPM lifecycle proof |
 | T7 | `500bda3` | GREEN, AUR package and structural guard |
-| T10 | `5aecf9c` | GREEN, README packaged in deb/RPM/AUR |
+| T10 | `5aecf9c`, `b4c5cda` | GREEN, README packaged in deb/RPM/AUR |
 
 **Review**: RDD assess over `f90605b..d24c086` returned risk **high** (`process_boundary` /
 `shell_process` in `data_artifacts.rs`), `review_due: true`. The maintainer granted consent.
@@ -282,11 +282,20 @@ reduced to **approved** with no correction required, authority burned (consumed 
 Last reviewed boundary: `88d4e2b`. A consent envelope for `f90605b..031c478`
 (`sha256:65ce8a41…`, lineage `review-ca7fd2406a9846fd`) was relayed and is still unanswered.
 
-**Delivery budget crossed**: the branch now stands at 623 insertions / 11 deletions against
-`f90605b`, past the ~400 authored-line slice budget. Strategy is `ask-on-risk`, so a chain
-strategy — `stacked-to-main` or `feature-branch-chain` — must be asked for once before the
-next commit.
+**Final verification after T10**: independent verifier ran the release gates and reported 10/10
+PASS:
+- `cargo test --workspace` → PASS, 0 failures, 1 intentionally ignored.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` → PASS.
+- `bash scripts/assert-single-reactor.sh` → PASS.
+- `bash scripts/run-lane-root.sh` → PASS, 17/17 tests on Debian and 17/17 on Fedora.
+- `bash scripts/run-lane-journal.sh` → PASS, 4/4 tests; journald audit-multicast warning was non-fatal.
+- `bash scripts/run-lane-polkit.sh` → PASS, 3/3 tests.
+- `bash scripts/run-lane-b.sh` → PASS, 20/20 session-bus tests.
+- `bash scripts/run-lane-deb.sh` → PASS; README present and `apt remove`/`apt purge` left no live rule.
+- `bash scripts/run-lane-rpm.sh` → PASS; README present and `dnf remove` left no live rule. Service
+  enablement inspection was skipped because the container had no running systemd manager.
+- `git diff --check` → PASS.
 
 ## Next step
 
-Run final gates, commit the README work-unit, then publish/merge according to ordinary repository policy.
+Push the completed feature branch and fast-forward `main` so the work is available from another machine.
