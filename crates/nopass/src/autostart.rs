@@ -299,6 +299,10 @@ mod tests {
         let postinst = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/debian/postinst")).unwrap();
         let prerm = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/debian/prerm")).unwrap();
         assert!(!postinst.contains("autostart/"), "postinst must not create/enable an autostart entry");
+        assert!(
+            !postinst.contains("systemctl enable nopass-cleanup.service"),
+            "Debian package installation must not enable nopass-cleanup.service"
+        );
         assert!(!prerm.contains("autostart/"), "prerm must not reference an autostart entry");
     }
 }

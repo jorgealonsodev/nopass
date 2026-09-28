@@ -169,6 +169,11 @@ the maintainer's decision.
   service enablement. `cargo-generate-rpm` is pinned to 0.16.1 for the Rust 1.85 toolchain.
   Commit evidence: `931cc46`.
 
+  **Debian postinst correction**: Removed package-time service enablement to match the manifest
+  policy; the packaging/autostart test now guards against it. Strict-TDD evidence: the focused
+  test failed before the correction and passed afterward (1 passed); `sh -n` and `git diff --check`
+  also passed.
+
 - [ ] **T6 — Prove rpm removal leaves no live sudoers rule.** T4's lane, for Fedora/rpm.
   Route: delegated writer. Checks: the new lane script exits 0.
 
