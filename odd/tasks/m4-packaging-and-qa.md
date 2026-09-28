@@ -304,4 +304,6 @@ for this candidate.
 
 ## Next step
 
-Push the completed feature branch and fast-forward `main` so the work is available from another machine.
+M4 implementation is complete and pushed to both `origin/main` and `origin/feat/m4-packaging-and-qa`.
+Tomorrow's optional follow-up is the deferred native review of the final pushed commit; the previous
+START returned a candidate-scoped consent decline with no lineage created and no authority burned.
