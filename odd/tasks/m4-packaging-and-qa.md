@@ -249,7 +249,7 @@ the maintainer's decision.
 | T4 | `c983241` | GREEN, Debian lifecycle proof |
 | T5 | `931cc46`, `19a40ad` | GREEN, RPM package construction proof |
 | T6 | `ca794ab` | GREEN, RPM lifecycle proof |
-| T7 | current work-unit commit | GREEN, AUR package and structural guard |
+| T7 | `500bda3` | GREEN, AUR package and structural guard |
 
 **Review**: RDD assess over `f90605b..d24c086` returned risk **high** (`process_boundary` /
 `shell_process` in `data_artifacts.rs`), `review_due: true`. The maintainer granted consent.
