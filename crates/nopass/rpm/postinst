@@ -1,0 +1,8 @@
+#!/bin/sh
+# Create /run/nopass immediately after installation, rather than waiting for
+# the next boot. The service remains user-owned: package installation never
+# enables it or creates an autostart entry.
+set -e
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/nopass.conf >/dev/null 2>&1 || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+exit 0

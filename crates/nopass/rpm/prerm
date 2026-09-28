@@ -1,0 +1,14 @@
+#!/bin/sh
+# RPM passes zero remaining instances for a final erase and a positive count
+# during an upgrade. Revoke grants while the installed helper is still present
+# only when the package is actually being removed.
+set -e
+if [ "$1" = "0" ]; then
+    systemctl stop 'nopass-expire-*.timer' >/dev/null 2>&1 || true
+    if [ -x /usr/libexec/nopass-helper ]; then
+        /usr/libexec/nopass-helper expire --boot >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/sudoers.d/90-nopass-* 2>/dev/null || true
+    systemctl disable nopass-cleanup.service >/dev/null 2>&1 || true
+fi
+exit 0

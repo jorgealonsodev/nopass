@@ -1,6 +1,7 @@
 [package]
 name = "nopass"
 version = "0.1.0"
+description = "Grants and revokes passwordless sudo for the current session's user through polkit."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -67,3 +68,25 @@ assets = [
 # Autostart is the user's decision, not the package's (RF-09), so no
 # systemd-enable and no autostart entry are shipped here.
 maintainer-scripts = "debian/"
+
+# RPM packaging uses the same installed paths and permissions as the Debian
+# package. Keep the helper at the compiled/polkit-annotated path: pkexec
+# compares the resolved program path against that annotation.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "../../target/release/nopass", dest = "/usr/bin/nopass", mode = "755" },
+    { source = "../../target/release/nopass-helper", dest = "/usr/libexec/nopass-helper", mode = "755" },
+    { source = "../../data/com.enfoquestic.nopass.policy", dest = "/usr/share/polkit-1/actions/com.enfoquestic.nopass.policy", mode = "644" },
+    { source = "../../data/nopass.tmpfiles.conf", dest = "/usr/lib/tmpfiles.d/nopass.conf", mode = "644" },
+    { source = "../../data/nopass-cleanup.service", dest = "/usr/lib/systemd/system/nopass-cleanup.service", mode = "644" },
+    { source = "../../data/icons/*.svg", dest = "/usr/share/icons/hicolor/scalable/apps/", mode = "644" },
+    { source = "../../data/nopass.desktop", dest = "/usr/share/applications/nopass.desktop", mode = "644" },
+]
+post_install_script = "rpm/postinst"
+pre_uninstall_script = "rpm/prerm"
+post_uninstall_script = "rpm/postrm"
+
+[package.metadata.generate-rpm.requires]
+sudo = "*"
+polkit = "*"
+systemd = "*"

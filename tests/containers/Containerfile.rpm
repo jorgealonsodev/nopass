@@ -1,0 +1,63 @@
+# RPM packaging proof for M4 T5. Builds the workspace and its real RPM with
+# cargo-generate-rpm inside Fedora, then verifies the payload and embedded
+# lifecycle scriptlets with Fedora's RPM tools.
+
+FROM fedora:40
+
+RUN dnf install -y \
+        rpm \
+        ca-certificates \
+        curl \
+        gcc \
+        pkgconf-pkg-config \
+    && dnf clean all
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# The workspace pins Rust 1.85. Pin cargo-generate-rpm to a release that
+# builds on that toolchain; installing an unbounded current release can raise
+# the packaging tool's MSRV independently of the application's MSRV.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain none --profile minimal
+
+WORKDIR /workspace
+COPY rust-toolchain.toml .
+RUN rustup show \
+    && cargo install cargo-generate-rpm --version 0.16.1 --locked
+
+COPY . .
+RUN cargo fetch --locked
+
+# Build and package the real binaries, then query the RPM rather than
+# inferring its contents from Cargo.toml. Both the installed helper path and
+# scriptlet policy are asserted in the image build itself.
+RUN set -eu; \
+    cargo build --release --workspace; \
+    cargo generate-rpm --package crates/nopass; \
+    rpm_file="$(find target -type f -name '*.rpm' -print -quit)"; \
+    test -n "$rpm_file"; \
+    echo "RPM payload ($rpm_file):"; \
+    payload="$(rpm -qpl "$rpm_file")"; \
+    printf '%s\n' "$payload"; \
+    for path in \
+        /usr/bin/nopass \
+        /usr/libexec/nopass-helper \
+        /usr/share/polkit-1/actions/com.enfoquestic.nopass.policy \
+        /usr/lib/tmpfiles.d/nopass.conf \
+        /usr/lib/systemd/system/nopass-cleanup.service \
+        /usr/share/icons/hicolor/scalable/apps/nopass-locked.svg \
+        /usr/share/applications/nopass.desktop; do \
+        printf '%s\n' "$payload" | grep -Fx "$path" >/dev/null; \
+    done; \
+    scriptlets="$(rpm -qp --scripts "$rpm_file")"; \
+    echo "RPM scriptlets:"; \
+    printf '%s\n' "$scriptlets"; \
+    printf '%s\n' "$scriptlets" | grep -Fq 'systemd-tmpfiles --create /usr/lib/tmpfiles.d/nopass.conf'; \
+    printf '%s\n' "$scriptlets" | grep -Fq '/usr/libexec/nopass-helper expire --boot'; \
+    printf '%s\n' "$scriptlets" | grep -Fq 'rm -rf /run/nopass'; \
+    if printf '%s\n' "$scriptlets" | grep -Fq 'systemctl enable nopass-cleanup.service'; then \
+        echo 'RPM scriptlets must not enable nopass-cleanup.service' >&2; \
+        exit 1; \
+    fi

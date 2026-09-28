@@ -158,9 +158,16 @@ the maintainer's decision.
   `systemctl list-timers` has nothing to answer; Lane C step 17 owns that on a real machine.
   The lane is deliberately NOT added to `openspec/config.yaml`'s gate_commands in this task.
 
-- [ ] **T5 — rpm packaging.** No `.spec` or `cargo-generate-rpm` metadata exists. Same asset
-  layout and same helper path as deb, plus the rpm equivalents of `postinst`/`prerm`/`postrm`.
-  Route: delegated writer. Checks: rpm builds inside the Fedora container.
+- [x] **T5 — rpm packaging.** DONE. Added `cargo-generate-rpm` metadata matching the Debian
+  asset layout and `/usr/libexec/nopass-helper`, plus RPM post-install, pre-uninstall and
+  post-uninstall scriptlets. The pre-uninstall script revokes through the installed helper on
+  final erase; the runtime directory is removed only on final erase, and install never enables
+  `nopass-cleanup.service`. A focused structural test pins the metadata and scriptlet policy.
+  **Observed evidence**: `cargo test -p nopass --test rpm_packaging` → 2 passed. The Fedora 40
+  Containerfile built `nopass-0.1.0-1.x86_64.rpm`; `rpm -qpl` verified the package payload and
+  `rpm -qp --scripts` verified the embedded lifecycle scriptlets, including no package-owned
+  service enablement. `cargo-generate-rpm` is pinned to 0.16.1 for the Rust 1.85 toolchain.
+  Commit evidence: `1522b0d`.
 
 - [ ] **T6 — Prove rpm removal leaves no live sudoers rule.** T4's lane, for Fedora/rpm.
   Route: delegated writer. Checks: the new lane script exits 0.
@@ -209,7 +216,7 @@ the maintainer's decision.
 
 ## Progress
 
-6/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
+7/10 tasks. Branch `feat/m4-packaging-and-qa` created off `f90605b`.
 
 | Task | Commit | Result |
 |---|---|---|
@@ -241,5 +248,5 @@ next commit.
 
 ## Next step
 
-Ask the maintainer for a chain strategy — the delivery budget is crossed. Then T5 (rpm
-packaging), which can reuse this lane's shape, followed by T6, T7 and T10.
+Ask the maintainer for a chain strategy — the delivery budget is crossed. Then T6 (rpm
+lifecycle proof), followed by T7 and T10.

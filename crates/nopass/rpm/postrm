@@ -1,0 +1,9 @@
+#!/bin/sh
+# /run/nopass is created by tmpfiles, not shipped as a package file, so RPM
+# cannot remove it automatically. Preserve it across upgrades; remove it only
+# after the final erase.
+set -e
+if [ "$1" = "0" ]; then
+    rm -rf /run/nopass
+fi
+exit 0
