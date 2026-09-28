@@ -167,7 +167,7 @@ the maintainer's decision.
   Containerfile built `nopass-0.1.0-1.x86_64.rpm`; `rpm -qpl` verified the package payload and
   `rpm -qp --scripts` verified the embedded lifecycle scriptlets, including no package-owned
   service enablement. `cargo-generate-rpm` is pinned to 0.16.1 for the Rust 1.85 toolchain.
-  Commit evidence: `1522b0d`.
+  Commit evidence: `931cc46`.
 
 - [ ] **T6 — Prove rpm removal leaves no live sudoers rule.** T4's lane, for Fedora/rpm.
   Route: delegated writer. Checks: the new lane script exits 0.
