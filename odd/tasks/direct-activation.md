@@ -37,4 +37,4 @@ The user wants one click → admin password prompt. The polkit authentication di
 - Remove inert `warning_acknowledged` field together with tests/config_tempdir.rs.
 
 ## Next step
-Build and install the .deb; user validates one-click polkit prompt.
+Released as v0.2.0 (version bump, merged to main).

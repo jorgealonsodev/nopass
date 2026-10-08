@@ -1,5 +1,5 @@
 pkgname=nopass
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Grants and revokes passwordless sudo for the current session's user through polkit"
 arch=('x86_64')

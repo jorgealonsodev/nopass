@@ -15,7 +15,10 @@ fn aur_pkgbuild_preserves_shared_helper_path_and_user_owned_activation() {
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
 
-    assert!(contents.contains("pkgver=0.1.0"), "AUR version must match the release");
+    assert!(
+        contents.contains(&format!("pkgver={}", env!("CARGO_PKG_VERSION"))),
+        "AUR version must match the crate version"
+    );
     assert!(
         contents.contains("https://github.com/jorgealonsodev/nopass")
             && contents.contains("#tag=v${pkgver}"),

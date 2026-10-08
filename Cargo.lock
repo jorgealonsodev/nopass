@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "nopass"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "async-io",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "nopass-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "nopass-helper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "nix",
