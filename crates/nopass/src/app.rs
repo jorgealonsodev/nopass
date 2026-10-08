@@ -37,7 +37,6 @@ use async_channel::{Receiver, Sender};
 
 use crate::autostart::{self, AutostartState};
 use crate::config::{self, Config, ConfigFault};
-use crate::consent::ConsentState;
 use crate::duration::GrantDuration;
 use crate::event::Event;
 use crate::format;
@@ -109,8 +108,8 @@ pub struct App {
     /// the moment a watch is established, so a LATER loss warns again.
     watch_warning_posted: bool,
     /// `~/.config/nopass/config.toml`'s resolved path — computed once by
-    /// `main::boot` and held here so every write (consent persistence,
-    /// the default-duration marker) and every `Trigger::MenuOpened`
+    /// `main::boot` and held here so every write (the default-duration
+    /// marker) and every `Trigger::MenuOpened`
     /// re-read (task 8.3, design.md §4 D4) goes through the same path
     /// without re-resolving `XDG_CONFIG_HOME` per call.
     config_path: PathBuf,
@@ -124,12 +123,6 @@ pub struct App {
     /// startup and re-read at every `Trigger::MenuOpened`; every field has
     /// a safe default, so a faulted or absent file never blocks startup.
     config: Config,
-    /// The consent state machine (design.md §3 D3; task 8.1) —
-    /// `handle_toggle`/`handle_duration_selected`/`handle_consent_*` are
-    /// the ONLY functions in this module that ever touch it, and every one
-    /// of them routes through `ConsentState::grant`/`arm`/`confirm`/
-    /// `cancel`, never a locally-fabricated acknowledged state.
-    consent: ConsentState,
     /// The preflight polkit readiness ladder's last result (design.md §0
     /// D6, task 8.4) — the field verify-report.md H6/G6 flagged as
     /// "computed then discarded". Updated at startup and again on every
@@ -165,7 +158,6 @@ impl App {
         config: Config,
         polkit: PolkitReadiness,
     ) -> App {
-        let consent = ConsentState::from_config(&config);
         App {
             user,
             state_path,
@@ -190,7 +182,6 @@ impl App {
             config_path,
             autostart_path,
             config,
-            consent,
             polkit,
             last_warned_fault: None,
         }
@@ -255,7 +246,6 @@ impl App {
             file,
             now,
             config: self.config,
-            consent_branch: self.consent.branch(),
             autostart,
             polkit: self.polkit,
             action_in_flight: self.action_gate.in_flight(),
@@ -415,32 +405,13 @@ impl App {
         self.maybe_probe(trigger, now);
     }
 
-    /// The text every non-menu activation path (left click, keyboard
-    /// `Activate` — both raise the same `Event::ToggleRequested` this
-    /// function handles; a menu-triggered toggle click reaches this exact
-    /// same function too, per spec `activation-consent`'s "written once...
-    /// not duplicated per caller") posts while consent is unrecorded
-    /// (design.md §3 D3 "Paths that cannot show a menu"; spec
-    /// `activation-consent` "No Grant Dispatch Without Recorded Consent").
-    // These were raw English constants. `format.rs` opens by promising that
-    // every user-facing string the tray renders lives there, and this is the
-    // most important message in the whole change: it is what a user sees the
-    // first time the tray refuses to grant. Showing it in English to a
-    // Spanish user, while the menu beside it speaks Spanish, defeats it.
-    fn unconsented_toggle_summary() -> String {
-        format::Msg::NotifyConsentNeededSummary.text(format::lang()).to_string()
-    }
-    fn unconsented_toggle_body() -> String {
-        format::Msg::NotifyConsentNeededBody.text(format::lang()).to_string()
-    }
-
-    /// design.md §3 D3/§1's single gate every activation-requesting caller
-    /// converges on (task 8.1). `Event::ToggleRequested` is shared by the
-    /// menu's toggle item, an SNI left-click, and keyboard `Activate`
-    /// (`tray.rs::Inner::activate`) — there is exactly one code path here,
-    /// not one per caller, so a bypass cannot hide behind an unaudited
-    /// second copy (spec `activation-consent` "This check MUST be
-    /// enforced at the one point...").
+    /// The one handler every toggle-raising caller converges on (task
+    /// 8.1). `Event::ToggleRequested` is shared by the menu's toggle item,
+    /// an SNI left-click, and keyboard `Activate` (`tray.rs::Inner::
+    /// activate`). While `Inactive` it dispatches an enable for
+    /// `config.default_duration` right away: there is no in-app consent
+    /// step, because the polkit authentication dialog `pkexec` raises is
+    /// the confirmation the user answers.
     fn handle_toggle(&mut self, now: u64) {
         let Some(ticket) = self.action_gate.try_begin() else {
             // design.md §4.4: a pending action already owns the gate —
@@ -448,22 +419,10 @@ impl App {
             return;
         };
         match &self.current_state {
-            TrayState::Inactive => match self.consent.grant() {
-                Some(granted) => {
-                    let action = Action::Enable(EnableRequest::new(self.config.default_duration, now, granted));
-                    self.spawn_action(action, ticket);
-                }
-                None => {
-                    // design.md §3 D3: left click, keyboard Activate, and
-                    // the menu's own bare toggle item all take this exact
-                    // arm while unacknowledged — none of them can render
-                    // a branch (that needs a specific duration, which only
-                    // `Event::DurationSelected` carries). No invocation is
-                    // ever made; the ticket is released immediately.
-                    drop(ticket);
-                    self.notify.post(Category::Environment, &Self::unconsented_toggle_summary(), &Self::unconsented_toggle_body());
-                }
-            },
+            TrayState::Inactive => {
+                let action = Action::Enable(EnableRequest::new(self.config.default_duration, now));
+                self.spawn_action(action, ticket);
+            }
             TrayState::Active { .. } => self.spawn_action(Action::Disable, ticket),
             // `toggle_availability(Unknown, ..) == Unavailable(StateUnknown)`
             // (design.md D6): no producer of `Event::ToggleRequested` can
@@ -475,63 +434,14 @@ impl App {
         self.render_menu_now(now);
     }
 
-    /// One entry inside "Activate during…" (design.md §1 "The consent
-    /// branch"; spec `activation-consent` "First Activation Branches the
-    /// Menu Instead of Granting", "A later activation skips the branch
-    /// once consent is recorded"; task 8.1). Already-acknowledged consent
-    /// dispatches the CHOSEN duration directly — never `config.
-    /// default_duration`, which is `handle_toggle`'s job alone. Otherwise
-    /// this arms the branch and nothing is invoked (design.md §5's
-    /// sequence: "NOTHING IS INVOKED. ActionGate untouched. No pkexec. No
-    /// helper.").
+    /// One entry inside "Activate during…" (design.md §1 item 3.1-3.6;
+    /// task 8.1): dispatches the CHOSEN duration directly — never
+    /// `config.default_duration`, which is `handle_toggle`'s job alone.
+    /// As with the toggle, polkit's own dialog is the confirmation.
     fn handle_duration_selected(&mut self, duration: GrantDuration, now: u64) {
-        match self.consent.grant() {
-            Some(granted) => {
-                let Some(ticket) = self.action_gate.try_begin() else { return };
-                let action = Action::Enable(EnableRequest::new(duration, now, granted));
-                self.spawn_action(action, ticket);
-            }
-            None => self.consent.arm(duration),
-        }
-        self.render_menu_now(now);
-    }
-
-    /// The consent branch's "I understand — activate[, and don't warn me
-    /// again]" (spec `activation-consent` "Confirming the branch grants
-    /// exactly once", "Don't-Warn-Again Persists Consent", "A Failed
-    /// Consent Write Re-Warns Rather Than Silently Granting"; task 8.1).
-    /// `persist`'s write goes through the SAME atomic `config::write`
-    /// every other config mutation uses; `ConsentState::confirm` only
-    /// acknowledges consent once that write actually succeeds (never on an
-    /// unpersisted in-memory flag), and this function mirrors that back
-    /// into `self.config` — never unconditionally, only when `grant()`
-    /// just started succeeding.
-    fn handle_consent_confirmed(&mut self, persist: bool, now: u64) {
         let Some(ticket) = self.action_gate.try_begin() else { return };
-        let config_path = self.config_path.clone();
-        let mut candidate = self.config;
-        candidate.warning_acknowledged = true;
-        let result = self.consent.confirm(persist, || config::write(&config_path, &candidate).is_ok());
-        if self.consent.grant().is_some() {
-            self.config.warning_acknowledged = true;
-        }
-        match result {
-            Some((duration, granted)) => {
-                let action = Action::Enable(EnableRequest::new(duration, now, granted));
-                self.spawn_action(action, ticket);
-            }
-            // `confirm` with nothing armed (a stale/duplicate click) — stay
-            // total, release the ticket rather than leak it.
-            None => drop(ticket),
-        }
-        self.render_menu_now(now);
-    }
-
-    /// The consent branch's "Cancel" (spec `activation-consent`
-    /// "Cancelling the branch grants nothing": no consent state changes,
-    /// zero invocations).
-    fn handle_consent_cancelled(&mut self, now: u64) {
-        self.consent.cancel();
+        let action = Action::Enable(EnableRequest::new(duration, now));
+        self.spawn_action(action, ticket);
         self.render_menu_now(now);
     }
 
@@ -592,7 +502,6 @@ impl App {
     fn refresh_config(&mut self) {
         let (config, fault) = config::resolve(&config::read(&self.config_path));
         self.config = config;
-        self.consent.sync_acknowledged(config.warning_acknowledged);
         match fault {
             Some(current) if self.last_warned_fault != Some(current) => {
                 self.last_warned_fault = Some(current);
@@ -711,8 +620,6 @@ impl App {
             Event::ProbeFinished(result) => self.handle_probe_finished(result, now),
             Event::ActionFinished(action, result) => self.handle_action_finished(action, result, now),
             Event::DurationSelected(duration) => self.handle_duration_selected(duration, now),
-            Event::ConsentConfirmed { persist } => self.handle_consent_confirmed(persist, now),
-            Event::ConsentCancelled => self.handle_consent_cancelled(now),
             Event::DefaultDurationSelected(duration) => self.handle_default_duration_selected(duration, now),
             Event::AutostartToggled => self.handle_autostart_toggled(now),
             Event::PolkitReadinessChanged(readiness) => self.handle_polkit_readiness_changed(readiness, now),
@@ -752,7 +659,6 @@ pub async fn run(mut app: App) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consent::granted_for_test;
     use crate::outcome::classify;
     use crate::runner::{CommandSpec, ScriptedRunner};
     use std::sync::Mutex;
@@ -827,6 +733,91 @@ mod tests {
         )
     }
 
+    /// [`test_app`] with an explicit [`Config`] — e.g. what a fresh install
+    /// (no `config.toml`, so [`Config::defaults`]) resolves to at startup.
+    fn test_app_with_config(
+        runner: Arc<dyn CommandRunner>,
+        tray: Arc<RecordingTray>,
+        notify: Arc<RecordingNotify>,
+        config: Config,
+    ) -> App {
+        let mut app = test_app(runner, tray, notify, Mode::Full);
+        app.config = config;
+        app
+    }
+
+    /// The exact `pkexec` argv an enable of `duration` at `at` must run.
+    fn enable_spec(duration: GrantDuration, at: u64) -> CommandSpec {
+        let mut args = vec![nopass_core::paths::HELPER_PATH.to_string(), "enable".to_string()];
+        args.extend(duration.args(at));
+        CommandSpec { program: PathBuf::from("/usr/bin/pkexec"), args, env: Vec::new() }
+    }
+
+    fn ok_outcome() -> Result<SpawnOutcome, RunnerError> {
+        Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] })
+    }
+
+    // ---- direct activation: the first activation request dispatches the
+    // enable right away, so polkit's own authentication dialog is the
+    // confirmation — no in-app gate, whatever the config says ----
+
+    #[test]
+    fn toggle_while_inactive_with_default_config_spawns_exactly_one_enable_with_the_default_duration() {
+        // Left click, keyboard Activate and the menu's toggle item all
+        // raise `Event::ToggleRequested`, which lands here. A non-`Hour1`
+        // default proves the CONFIGURED duration is used, and the fixed
+        // `at` keeps the expected `--until` argv deterministic.
+        let at = 1_700_000_000;
+        let runner: Arc<dyn CommandRunner> = Arc::new(ScriptedRunner::new(vec![
+            (enable_spec(GrantDuration::Hours4, at), ok_outcome()),
+            (probe::spec(&PathBuf::from("/usr/bin/sudo")), ok_outcome()),
+        ]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let config = Config { default_duration: GrantDuration::Hours4, ..Config::defaults() };
+        let mut app = test_app_with_config(runner, tray, notify.clone(), config);
+        app.current_state = TrayState::Inactive;
+        let rx = app.events_rx.clone();
+
+        app.handle_toggle(at);
+
+        match recv_and_handle(&mut app, SHORT) {
+            Some(HandledEvent::ActionFinishedEnableOk) => {}
+            other => panic!("the first toggle must dispatch exactly one enable, got {other:?}"),
+        }
+        // The ActionCompleted trigger's own forced probe — the second and
+        // last scripted call; nothing else may follow it.
+        assert!(matches!(recv_within(&rx, SHORT), Some(Event::ProbeFinished(_))));
+        assert!(recv_within(&rx, NONE_EXPECTED).is_none(), "exactly one enable, never a second invocation");
+        assert!(
+            !notify.posts.lock().unwrap().iter().any(|(c, _, _)| *c == Category::Environment),
+            "a toggle must never post an environment notification instead of dispatching"
+        );
+    }
+
+    #[test]
+    fn duration_selected_with_default_config_spawns_an_enable_with_that_duration() {
+        let at = 1_700_000_000;
+        let runner: Arc<dyn CommandRunner> = Arc::new(ScriptedRunner::new(vec![
+            (enable_spec(GrantDuration::Hours8, at), ok_outcome()),
+            (probe::spec(&PathBuf::from("/usr/bin/sudo")), ok_outcome()),
+        ]));
+        let tray = Arc::new(RecordingTray::default());
+        let notify = Arc::new(RecordingNotify::default());
+        let mut app = test_app_with_config(runner, tray, notify, Config::defaults());
+        app.current_state = TrayState::Inactive;
+        let rx = app.events_rx.clone();
+
+        app.handle_duration_selected(GrantDuration::Hours8, at);
+
+        match recv_and_handle(&mut app, SHORT) {
+            Some(HandledEvent::ActionFinishedEnableOk) => {}
+            other => panic!("selecting a duration must dispatch its enable directly, got {other:?}"),
+        }
+        assert!(matches!(recv_within(&rx, SHORT), Some(Event::ProbeFinished(_))));
+        assert!(recv_within(&rx, NONE_EXPECTED).is_none(), "exactly one enable, never a second invocation");
+    }
+
     /// Blocks for up to `timeout` for the next event on `rx`; `None` on
     /// timeout — used to assert both "a probe/action was requested" and
     /// "no extra one was" within a bounded window.
@@ -841,9 +832,8 @@ mod tests {
     }
 
     /// The subset of a just-handled [`Event`] these tests need to assert
-    /// on. `Event` is deliberately not `Clone` (design.md §3 D3:
-    /// `ActionFinished` carries a `Granted`-backed `Action` that must not
-    /// be duplicated), so `recv_and_handle` inspects the event by
+    /// on. `Event` is deliberately not `Clone` (`ActionFinished` carries an
+    /// `Action`, which is not `Clone` either), so `recv_and_handle` inspects the event by
     /// reference before moving it into `app.handle` and returns this
     /// small summary instead of the event itself.
     #[derive(Debug)]
@@ -1073,226 +1063,21 @@ mod tests {
         }
     }
 
-    // ---- task 8.2 (RED): every activation-requesting caller dispatches
-    // nothing while consent is unrecorded, and posts exactly one
-    // Category::Environment notification (spec `activation-consent`
-    // "A menu-triggered activation...", "A non-menu activation path...",
-    // "...activation nudge never itself dispatches an enable") ----
-
-    fn unconsented_app(runner: Arc<dyn CommandRunner>, tray: Arc<RecordingTray>, notify: Arc<RecordingNotify>) -> App {
-        let mut app = test_app(runner, tray, notify, Mode::Full);
-        app.config.warning_acknowledged = false;
-        app.consent = ConsentState::from_config(&app.config);
-        app
-    }
-
     #[test]
-    fn toggle_requested_while_unconsented_dispatches_nothing_and_notifies_once() {
-        // Left click, keyboard Activate, and the menu's own toggle item
-        // ALL raise this exact same `Event::ToggleRequested` — proving it
-        // here proves all three at once, per spec `activation-consent`
-        // "This check MUST be enforced at the one point...".
+    fn activate_requested_the_second_instance_nudge_never_dispatches_an_enable() {
+        // A received single-instance activation nudge only ever
+        // reassert()s — it is not wired to `handle_toggle`, so a second
+        // `nopass` launch can never raise a polkit prompt on its own.
         let runner: Arc<dyn CommandRunner> = Arc::new(ScriptedRunner::new(vec![]));
         let tray = Arc::new(RecordingTray::default());
         let notify = Arc::new(RecordingNotify::default());
-        let mut app = unconsented_app(runner, tray, notify.clone());
-        app.current_state = TrayState::Inactive;
-
-        app.handle_toggle(now());
-
-        assert!(app.action_gate.try_begin().is_some(), "handle_toggle must never leave the gate held when it dispatches nothing");
-        let posts = notify.posts.lock().unwrap();
-        assert_eq!(posts.len(), 1, "exactly one notification, got {posts:?}");
-        assert_eq!(posts[0].0, Category::Environment);
-        assert_eq!(posts[0].2, format::Msg::NotifyConsentNeededBody.text(format::lang()));
-    }
-
-    #[test]
-    fn activate_requested_the_second_instance_nudge_never_dispatches_an_enable_while_unconsented() {
-        // spec `activation-consent` "A received single-instance activation
-        // nudge never itself dispatches an enable": `ActivateRequested`
-        // only ever reassert()s — it is not even wired to `handle_toggle`,
-        // so this is provable without touching `ConsentState` at all.
-        let runner: Arc<dyn CommandRunner> = Arc::new(ScriptedRunner::new(vec![]));
-        let tray = Arc::new(RecordingTray::default());
-        let notify = Arc::new(RecordingNotify::default());
-        let mut app = unconsented_app(runner, tray.clone(), notify.clone());
+        let mut app = test_app_with_config(runner, tray.clone(), notify.clone(), Config::defaults());
         app.current_state = TrayState::Inactive;
 
         assert!(app.handle(Event::ActivateRequested), "ActivateRequested must never end the loop");
 
         assert_eq!(*tray.reasserts.lock().unwrap(), 1);
         assert!(notify.posts.lock().unwrap().is_empty(), "the nudge itself must never notify or dispatch");
-    }
-
-    #[test]
-    fn duration_selected_while_unconsented_arms_the_branch_and_dispatches_nothing() {
-        let runner: Arc<dyn CommandRunner> = Arc::new(ScriptedRunner::new(vec![]));
-        let tray = Arc::new(RecordingTray::default());
-        let notify = Arc::new(RecordingNotify::default());
-        let mut app = unconsented_app(runner, tray.clone(), notify.clone());
-        app.current_state = TrayState::Inactive;
-
-        app.handle(Event::DurationSelected(GrantDuration::Hours4));
-
-        assert!(app.consent.branch().is_some(), "arming must record the pending duration");
-        assert!(notify.posts.lock().unwrap().is_empty(), "arming a duration must never notify — only the plain toggle path does");
-        let menus = tray.menus.lock().unwrap();
-        assert!(menus.last().unwrap().consent_branch.is_some(), "the re-rendered menu must reflect the armed branch");
-    }
-
-    // ---- spec `activation-consent`: confirming/cancelling the branch ----
-
-    #[test]
-    fn confirming_the_branch_grants_exactly_once() {
-        let runner: Arc<dyn CommandRunner> =
-            Arc::new(AnyCommandRunner::new(vec![Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] })]));
-        let tray = Arc::new(RecordingTray::default());
-        let notify = Arc::new(RecordingNotify::default());
-        let mut app = unconsented_app(runner, tray, notify);
-        app.current_state = TrayState::Inactive;
-        app.consent.arm(GrantDuration::Hours4);
-
-        app.handle(Event::ConsentConfirmed { persist: false });
-
-        match recv_and_handle(&mut app, SHORT) {
-            Some(HandledEvent::ActionFinishedEnableOk) => {}
-            other => panic!("expected exactly one enable dispatch, got {other:?}"),
-        }
-        assert!(app.consent.branch().is_none(), "confirming must clear the pending duration");
-    }
-
-    // Reproduces, at the real `App`, the exact field sequence observed on a
-    // real desktop with no persisted `config.toml`: arm a duration, confirm
-    // WITHOUT persisting ("I understand — activate", not "don't warn
-    // again"), let the grant go through, then pick ANOTHER duration under
-    // "Activate during…" ~seconds later. `warning_acknowledged` was never
-    // written to disk, so `ConsentState::acknowledged` must still be
-    // `false` — the second `DurationSelected` must re-arm the branch
-    // (spec `activation-consent` "No Grant Dispatch Without Recorded
-    // Consent"), never dispatch directly. Only ONE runner result is
-    // scripted on purpose: if the second `DurationSelected` bypassed
-    // consent and dispatched too, `AnyCommandRunner`'s queue would be
-    // empty and it would report a spawn error on the channel instead of
-    // staying silent — so `recv_within(..).is_none()` below is proof, not
-    // an assumption, that no second privileged invocation was made.
-    #[test]
-    fn a_second_duration_selected_after_an_unpersisted_confirmation_re_arms_rather_than_granting() {
-        let runner: Arc<dyn CommandRunner> =
-            Arc::new(AnyCommandRunner::new(vec![Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] })]));
-        let tray = Arc::new(RecordingTray::default());
-        let notify = Arc::new(RecordingNotify::default());
-        let mut app = unconsented_app(runner, tray, notify);
-        app.current_state = TrayState::Inactive;
-        let rx = app.events_rx.clone();
-
-        // 1) First activation: arm, then confirm with persist=false.
-        app.handle(Event::DurationSelected(GrantDuration::Hour1));
-        assert!(app.consent.branch().is_some(), "the first DurationSelected must arm the branch");
-        app.handle(Event::ConsentConfirmed { persist: false });
-        match recv_and_handle(&mut app, SHORT) {
-            Some(HandledEvent::ActionFinishedEnableOk) => {}
-            other => panic!("expected the first confirmed activation to grant exactly once, got {other:?}"),
-        }
-        // Drain the ActionCompleted trigger's own forced probe, exactly as
-        // `confirming_with_persist_writes_the_config_and_a_later_
-        // activation_skips_the_branch` does, before moving on.
-        assert!(matches!(recv_within(&rx, SHORT), Some(Event::ProbeFinished(_))));
-
-        // `persist: false` must never have set `acknowledged`.
-        assert!(app.consent.grant().is_none(), "an unpersisted confirmation must never acknowledge consent");
-
-        // 2) ~97 seconds later: a second, different duration picked under
-        // "Activate during…", with NO second confirmation in between.
-        app.handle(Event::DurationSelected(GrantDuration::Hours4));
-
-        assert!(
-            recv_within(&rx, NONE_EXPECTED).is_none(),
-            "a second DurationSelected must never dispatch a grant without its own confirmation"
-        );
-        assert!(
-            app.consent.branch().is_some(),
-            "the second DurationSelected must re-arm the branch instead of bypassing consent"
-        );
-    }
-
-    #[test]
-    fn cancelling_the_branch_grants_nothing_and_changes_no_consent_state() {
-        let runner: Arc<dyn CommandRunner> = Arc::new(ScriptedRunner::new(vec![]));
-        let tray = Arc::new(RecordingTray::default());
-        let notify = Arc::new(RecordingNotify::default());
-        let mut app = unconsented_app(runner, tray, notify);
-        app.consent.arm(GrantDuration::Hours4);
-
-        app.handle(Event::ConsentCancelled);
-
-        assert!(app.consent.branch().is_none(), "cancel must clear the pending duration");
-        assert!(app.consent.grant().is_none(), "cancel must not acknowledge consent as a side effect");
-    }
-
-    #[test]
-    fn confirming_with_persist_writes_the_config_and_a_later_activation_skips_the_branch() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = tmp.path().join("config.toml");
-
-        // Two round trips (confirm's own enable + its post-action probe,
-        // then the later DurationSelected's enable + its own probe) — four
-        // runner calls total.
-        let runner: Arc<dyn CommandRunner> = Arc::new(AnyCommandRunner::new(vec![
-            Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] }),
-            Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] }),
-            Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] }),
-            Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] }),
-        ]));
-        let tray = Arc::new(RecordingTray::default());
-        let notify = Arc::new(RecordingNotify::default());
-        let mut app = unconsented_app(runner, tray, notify);
-        app.config_path = config_path.clone();
-        app.current_state = TrayState::Inactive;
-        app.consent.arm(GrantDuration::Hours4);
-
-        let rx = app.events_rx.clone();
-        app.handle(Event::ConsentConfirmed { persist: true });
-        assert!(matches!(recv_and_handle(&mut app, SHORT), Some(HandledEvent::ActionFinishedEnableOk)));
-        // Drain (without re-handling) the ActionCompleted trigger's own
-        // forced probe before moving on — otherwise it is still sitting
-        // in the channel ahead of the next round's own ActionFinished,
-        // exactly the pattern `toggle_while_inactive_enables_and_a_
-        // second_toggle_in_flight_is_ignored` already established above.
-        assert!(matches!(recv_within(&rx, SHORT), Some(Event::ProbeFinished(_))));
-
-        let (reread, fault) = config::resolve(&config::read(&config_path));
-        assert_eq!(fault, None);
-        assert!(reread.warning_acknowledged, "persist=true must write warning_acknowledged=true (warn_before_activation=false)");
-
-        // A later activation dispatches directly — no branch presented.
-        app.handle(Event::DurationSelected(GrantDuration::Hour1));
-        assert!(matches!(recv_and_handle(&mut app, SHORT), Some(HandledEvent::ActionFinishedEnableOk)));
-        assert!(app.consent.branch().is_none());
-    }
-
-    #[test]
-    fn a_write_failure_during_persist_re_warns_rather_than_silently_granting_the_next_activation() {
-        // A config path whose PARENT does not exist: `atomicfile::write`'s
-        // `O_CREAT` tmp-file step fails deterministically, with no real
-        // filesystem permission trickery needed.
-        let config_path = PathBuf::from("/nonexistent/nopass-app-test/does-not-exist/config.toml");
-
-        let runner: Arc<dyn CommandRunner> =
-            Arc::new(AnyCommandRunner::new(vec![Ok(SpawnOutcome { status: Some(0), stdout: vec![], stderr: vec![] })]));
-        let tray = Arc::new(RecordingTray::default());
-        let notify = Arc::new(RecordingNotify::default());
-        let mut app = unconsented_app(runner, tray, notify);
-        app.config_path = config_path;
-        app.current_state = TrayState::Inactive;
-        app.consent.arm(GrantDuration::Hours4);
-
-        app.handle(Event::ConsentConfirmed { persist: true });
-        // This one confirmed activation still proceeds...
-        assert!(matches!(recv_and_handle(&mut app, SHORT), Some(HandledEvent::ActionFinishedEnableOk)));
-        // ...but the write failed, so consent must still read as
-        // unrecorded for the NEXT activation.
-        assert!(app.consent.grant().is_none(), "a failed persist write must re-warn, never silently grant next time");
     }
 
     // ---- task 8.1/8.8 (RED): the full app composition — default
@@ -1327,7 +1112,7 @@ mod tests {
             ]));
             let tray = Arc::new(RecordingTray::default());
             let notify = Arc::new(RecordingNotify::default());
-            let mut app = test_app(runner, tray, notify, Mode::Full); // acknowledged consent
+            let mut app = test_app(runner, tray, notify, Mode::Full);
             app.current_state = TrayState::Inactive;
 
             let rx = app.events_rx.clone();
@@ -1609,7 +1394,7 @@ mod tests {
         let notify = Arc::new(RecordingNotify::default());
         let mut app = test_app(runner, tray, notify.clone(), Mode::Full);
 
-        let kind = classify(Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1, granted_for_test())), Some(17), true);
+        let kind = classify(Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1)), Some(17), true);
         assert_eq!(kind, OutcomeKind::TimerUnscheduled);
         app.pending_escalation = Some(kind);
         app.handle_probe_finished(Ok(Probe::Passwordless), now());

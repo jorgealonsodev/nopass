@@ -13,19 +13,12 @@
 //! is the only module allowed to translate a [`MenuNode`] into a real
 //! `ksni::MenuItem`.
 //!
-//! **The one invariant this module exists to protect**: an unconsented
-//! grant must stay unrepresentable here, not merely absent by
-//! convention. `menu.rs` never imports `crate::consent::Granted`,
-//! `crate::outcome::Action`, or `crate::outcome::EnableRequest` — there
-//! is structurally no code path in this file that could construct an
-//! `Action::Enable`. The only way this module ever renders anything
-//! related to a pending activation is [`ConsentBranch`] — the value
-//! [`crate::consent::ConsentState::branch`] returns while a duration is
-//! armed and unacknowledged — which carries nothing but the pending
-//! duration, never a `Granted`. Dispatching the confirmed action is
-//! Phase 7/8's job, driven by the [`MenuNodeKind::ConfirmActivate`] a
-//! click on the rendered branch reports; this module never dispatches
-//! anything itself.
+//! **The one invariant this module exists to protect**: rendering a menu
+//! never dispatches anything. `menu.rs` never imports
+//! `crate::outcome::Action` or `crate::outcome::EnableRequest` — there is
+//! structurally no code path in this file that could construct an
+//! `Action::Enable`. A click only reports a [`MenuNodeKind`]; dispatching
+//! the action it names is `app.rs`'s job.
 
 use std::path::Path;
 
@@ -34,7 +27,6 @@ use nopass_core::expiry::Expiry;
 use crate::atomicfile::AtomicFileError;
 use crate::autostart::AutostartState;
 use crate::config::{self, Config};
-use crate::consent::ConsentBranch;
 use crate::duration::GrantDuration;
 use crate::format::{self, Lang, Msg};
 use crate::preflight::{PolkitReadiness, ToggleAvailability, UnavailableReason};
@@ -70,26 +62,20 @@ pub enum MenuNodeKind {
     /// `Inactive`, disables while `Active`.
     Toggle,
     /// One entry inside "Activate during…" — a request to activate for
-    /// exactly this duration. Reaching consent's gate is the caller's
-    /// job (`crate::consent::ConsentState::grant`/`arm`), never this
-    /// module's.
+    /// exactly this duration. Dispatching it is the caller's job, never
+    /// this module's.
     ActivateFor(GrantDuration),
     /// One entry inside "Default duration" — changes and persists the
     /// configured default (spec `tray-menu` "Selecting a new default
     /// moves the marker and persists it"; see [`select_default_duration`]).
     SelectDefaultDuration(GrantDuration),
-    /// The consent branch's "I understand — activate[, and don't warn me
-    /// again]" (design.md §1 "The consent branch").
-    ConfirmActivate { persist: bool },
-    /// The consent branch's "Cancel".
-    CancelActivate,
     /// "Start with session" — toggles the autostart entry.
     ToggleAutostart,
     Quit,
 }
 
 /// Everything [`menu_tree`] needs — an extension of M2's
-/// [`crate::tray::ViewModel`] with the config/consent/autostart state
+/// [`crate::tray::ViewModel`] with the config/autostart state
 /// the menu (but not the tray icon/tooltip) additionally renders (task
 /// 6.1). Assembling one — including the `autostart::read`/`state::read`
 /// calls that feed [`MenuModel::autostart`]/[`MenuModel::file`] — is the
@@ -113,12 +99,6 @@ pub struct MenuModel {
     pub file: FileReading,
     pub now: u64,
     pub config: Config,
-    /// `Some` while an activation is armed and unacknowledged — what
-    /// [`crate::consent::ConsentState::branch`] returns. `None` renders
-    /// the ordinary toggle/"Activate during…" pair; `Some` replaces both
-    /// with the consent branch (spec `activation-consent` "First
-    /// Activation Branches the Menu Instead of Granting").
-    pub consent_branch: Option<ConsentBranch>,
     pub autostart: AutostartState,
     /// The preflight polkit readiness `App` currently holds (design.md §0
     /// D6, task 8.4). Feeds [`crate::preflight::toggle_availability`]
@@ -149,15 +129,12 @@ pub fn menu_tree(model: &MenuModel) -> Vec<MenuNode> {
 pub(crate) fn menu_tree_in(lang: Lang, model: &MenuModel) -> Vec<MenuNode> {
     let mut nodes = Vec::with_capacity(7);
 
-    match model.consent_branch {
-        Some(branch) => nodes.extend(consent_branch_nodes(lang, branch)),
-        None => match crate::preflight::toggle_availability(&model.state, model.polkit, model.action_in_flight) {
-            ToggleAvailability::Unavailable(reason) => nodes.push(unavailable_toggle_node(lang, reason)),
-            ToggleAvailability::OfferEnable | ToggleAvailability::OfferDisable => {
-                nodes.push(toggle_node(model));
-                nodes.push(activate_during_node(lang));
-            }
-        },
+    match crate::preflight::toggle_availability(&model.state, model.polkit, model.action_in_flight) {
+        ToggleAvailability::Unavailable(reason) => nodes.push(unavailable_toggle_node(lang, reason)),
+        ToggleAvailability::OfferEnable | ToggleAvailability::OfferDisable => {
+            nodes.push(toggle_node(model));
+            nodes.push(activate_during_node(lang));
+        }
     }
 
     nodes.push(default_duration_node(lang, model));
@@ -399,47 +376,10 @@ fn quit_node(lang: Lang) -> MenuNode {
     MenuNode { label: Msg::MenuQuit.text(lang).to_string(), enabled: true, checked: None, kind: MenuNodeKind::Quit, children: Vec::new() }
 }
 
-/// The consent branch (design.md §1 "The consent branch"; spec
-/// `activation-consent` "First Activation Branches the Menu Instead of
-/// Granting"): two insensitive warning lines, then the three sensitive
-/// actions. Replaces the ordinary toggle/"Activate during…" pair
-/// wholesale — see [`menu_tree_in`]'s `match` — never appended alongside
-/// it.
-fn consent_branch_nodes(lang: Lang, branch: ConsentBranch) -> Vec<MenuNode> {
-    let duration = duration_label(lang, branch.pending);
-    vec![
-        static_item(Msg::ConsentWarningTitle.text(lang)),
-        static_item(Msg::ConsentWarningBody.text(lang)),
-        MenuNode {
-            label: format!("{} {duration}", Msg::ConsentConfirmOncePrefix.text(lang)),
-            enabled: true,
-            checked: None,
-            kind: MenuNodeKind::ConfirmActivate { persist: false },
-            children: Vec::new(),
-        },
-        MenuNode {
-            label: Msg::ConsentConfirmPersist.text(lang).to_string(),
-            enabled: true,
-            checked: None,
-            kind: MenuNodeKind::ConfirmActivate { persist: true },
-            children: Vec::new(),
-        },
-        MenuNode {
-            label: Msg::ConsentCancel.text(lang).to_string(),
-            enabled: true,
-            checked: None,
-            kind: MenuNodeKind::CancelActivate,
-            children: Vec::new(),
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::consent::ConsentState;
-    use crate::runner::ScriptedRunner;
     use nopass_core::state::HelperStatus;
 
     const NOW: u64 = 1_000_000;
@@ -455,7 +395,6 @@ mod tests {
             file,
             now: NOW,
             config,
-            consent_branch: None,
             autostart,
             polkit: PolkitReadiness::Ready,
             action_in_flight: false,
@@ -742,57 +681,21 @@ mod tests {
         assert!(!autostart_node.enabled);
     }
 
-    // ---- task 6.7: the consent branch replaces rows 3-4 and dispatches nothing ----
+    // ---- direct activation: an Inactive tree offers the toggle and
+    // "Activate during…" directly, whatever the config says ----
 
     #[test]
-    fn first_unconsented_activate_for_replaces_toggle_and_activate_during_with_the_consent_branch() {
-        // An empty script: any `run()` call panics ("script exhausted")
-        // before this test could ever observe a result — dropped without
-        // panicking is itself proof that building this tree invoked
-        // nothing (mirrors consent.rs's own zero-invocation tests).
-        let runner = ScriptedRunner::new(vec![]);
+    fn inactive_tree_with_schema_default_config_offers_the_toggle_and_activate_during_directly() {
+        let m = model(TrayState::Inactive, FileReading::Absent, Config::defaults(), AutostartState::Disabled);
+        let tree = menu_tree_in(Lang::En, &m);
 
-        let mut consent =
-            ConsentState::from_config(&Config { default_duration: GrantDuration::Hour1, warning_acknowledged: false });
-        consent.arm(GrantDuration::Hours4);
-
-        let mut m = model(TrayState::Inactive, FileReading::Absent, default_config(), AutostartState::Disabled);
-        m.consent_branch = consent.branch();
-        assert!(m.consent_branch.is_some(), "precondition: a duration must be armed and unacknowledged");
-
-        let ordinary = {
-            let mut acknowledged = m.clone();
-            acknowledged.consent_branch = None;
-            menu_tree_in(Lang::En, &acknowledged)
-        };
-        let branched = menu_tree_in(Lang::En, &m);
-
-        assert_eq!(branched.len(), 10, "5 branch items replacing 2, plus the unchanged trailing 5");
-        assert_eq!(&branched[5..], &ordinary[2..], "Default duration onward must be byte-identical, unchanged by the branch");
-
-        assert!(!branched[0].enabled, "the warning title must be insensitive");
-        assert_eq!(branched[0].label, "⚠ Read this before activating");
-        assert!(!branched[1].enabled, "the warning body must be insensitive");
-        assert_eq!(
-            branched[1].label,
-            "Any program running as you can become root without a password until this expires."
-        );
-        assert_eq!(branched[2].label, "I understand — activate for 4 hours");
-        assert_eq!(branched[2].kind, MenuNodeKind::ConfirmActivate { persist: false });
-        assert_eq!(branched[3].label, "I understand — activate and don't warn me again");
-        assert_eq!(branched[3].kind, MenuNodeKind::ConfirmActivate { persist: true });
-        assert_eq!(branched[4].label, "Cancel");
-        assert_eq!(branched[4].kind, MenuNodeKind::CancelActivate);
-
-        // No node anywhere in the branched tree is (or contains) a
-        // Toggle or ActivateFor node — the two replaced slots are gone,
-        // not merely relabeled.
+        assert_eq!(tree.len(), 7, "toggle, Activate during…, then the unchanged trailing 5");
+        assert_eq!(tree[0].kind, MenuNodeKind::Toggle);
+        assert!(tree[0].enabled, "the toggle must be clickable on a fresh install");
         assert!(
-            !branched.iter().any(|n| matches!(n.kind, MenuNodeKind::Toggle | MenuNodeKind::ActivateFor(_))),
-            "the branch must fully replace rows 3-4, not coexist with them"
+            tree[1].children.iter().all(|n| n.enabled && matches!(n.kind, MenuNodeKind::ActivateFor(_))),
+            "every Activate during… entry must be a direct, clickable activation"
         );
-
-        drop(runner);
     }
 
     // ---- task 8.4/8.6: ActionMissing renders one insensitive
@@ -858,11 +761,9 @@ mod tests {
     fn menu_rs_never_imports_ksni_or_the_action_enable_constructor() {
         // The structural half of task 6.7's instruction: this is a
         // compile-time property, pinned by reading this module's own
-        // source (mirrors autostart.rs's packaging-manifest pin,
-        // consent.rs's `Granted(())` module-doc pin). If any of these
-        // strings ever appear in this file, an unconsented grant has
-        // stopped being merely absent by convention and started being
-        // representable again.
+        // source (mirrors autostart.rs's packaging-manifest pin). If any
+        // of these strings ever appear in this file, rendering a menu has
+        // started being able to dispatch an action.
         let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/menu.rs")).unwrap();
 
         // Only the PRODUCTION portion of this file is in scope — this
@@ -884,7 +785,6 @@ mod tests {
         assert!(!code.contains("use ksni"), "menu.rs must stay bus-free — no ksni import");
         assert!(!code.contains("ksni::"), "menu.rs must never reference ksni directly");
         assert!(!code.contains("EnableRequest"), "menu.rs must never name the Action::Enable constructor");
-        assert!(!code.contains("consent::Granted"), "menu.rs must never import the unconstructible Granted type");
         assert!(!code.contains("outcome::Action"), "menu.rs must never import Action — dispatch is Phase 7/8's job");
     }
 }

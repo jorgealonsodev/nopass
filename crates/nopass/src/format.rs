@@ -93,9 +93,7 @@ pub(crate) enum Msg {
     // which contradicted this module's own opening promise that every
     // user-facing string lives here — and meant that under a Spanish
     // locale the menu, tooltip and toggle spoke Spanish while the
-    // first-activation nudge and the polkit toast spoke English.
-    NotifyConsentNeededSummary,
-    NotifyConsentNeededBody,
+    // polkit toast spoke English.
     NotifyPolkitUnavailableSummary,
     NotifyPolkitUnavailableBody,
     NotifyConfigUnreadableSummary,
@@ -142,12 +140,6 @@ pub(crate) enum Msg {
     DurationLabelHours8,
     DurationLabelUntilReboot,
     DurationLabelPermanent,
-    // ---- Phase 6 — the consent branch (design.md §1 "The consent branch") ----
-    ConsentWarningTitle,
-    ConsentWarningBody,
-    ConsentConfirmOncePrefix,
-    ConsentConfirmPersist,
-    ConsentCancel,
     // ---- Phase 8 (task 8.4/8.6, design.md §0 D6) — the toggle's
     // "unavailable, with a reason" labels; `StateUnknown` reuses
     // `Msg::StatusChecking` rather than a fourth arm, since it renders
@@ -296,14 +288,6 @@ impl Msg {
                 Lang::En => "About",
                 Lang::Es => "Acerca de",
             },
-            Msg::NotifyConsentNeededSummary => match lang {
-                Lang::En => "Activation needs your consent first",
-                Lang::Es => "La activación necesita tu consentimiento",
-            },
-            Msg::NotifyConsentNeededBody => match lang {
-                Lang::En => "Open the NoPass menu to activate for the first time",
-                Lang::Es => "Abre el menú de NoPass para activarlo por primera vez",
-            },
             Msg::NotifyPolkitUnavailableSummary => match lang {
                 Lang::En => "Passwordless sudo is not available",
                 Lang::Es => "sudo sin contraseña no está disponible",
@@ -367,31 +351,6 @@ impl Msg {
             Msg::DurationLabelPermanent => match lang {
                 Lang::En => "Permanently",
                 Lang::Es => "Permanentemente",
-            },
-            Msg::ConsentWarningTitle => match lang {
-                Lang::En => "⚠ Read this before activating",
-                Lang::Es => "⚠ Lee esto antes de activar",
-            },
-            Msg::ConsentWarningBody => match lang {
-                Lang::En => {
-                    "Any program running as you can become root without a password until this expires."
-                }
-                Lang::Es => {
-                    "Cualquier programa que se ejecute como tú podrá convertirse en root sin contraseña \
-                     hasta que esto caduque."
-                }
-            },
-            Msg::ConsentConfirmOncePrefix => match lang {
-                Lang::En => "I understand — activate for",
-                Lang::Es => "Entendido: activar durante",
-            },
-            Msg::ConsentConfirmPersist => match lang {
-                Lang::En => "I understand — activate and don't warn me again",
-                Lang::Es => "Entendido: activar y no volver a advertirme",
-            },
-            Msg::ConsentCancel => match lang {
-                Lang::En => "Cancel",
-                Lang::Es => "Cancelar",
             },
             Msg::ToggleUnavailableInstallationIncomplete => match lang {
                 Lang::En => "Unavailable — installation incomplete",
@@ -799,7 +758,7 @@ mod tests {
         /// variant — only used to seed [`Msg::next`]'s walk in
         /// [`Msg::all`]. The order itself carries no meaning.
         fn first() -> Msg {
-            Msg::NotifyConsentNeededSummary
+            Msg::NotifyPolkitUnavailableSummary
         }
 
         /// The arm that follows `self` in that same order, or `None`
@@ -817,8 +776,6 @@ mod tests {
         /// is a compile error, not a silent gap.
         fn next(self) -> Option<Msg> {
             match self {
-                Msg::NotifyConsentNeededSummary => Some(Msg::NotifyConsentNeededBody),
-                Msg::NotifyConsentNeededBody => Some(Msg::NotifyPolkitUnavailableSummary),
                 Msg::NotifyPolkitUnavailableSummary => Some(Msg::NotifyPolkitUnavailableBody),
                 Msg::NotifyPolkitUnavailableBody => Some(Msg::NotifyConfigUnreadableSummary),
                 Msg::NotifyConfigUnreadableSummary => Some(Msg::NotifyConfigUnreadableBody),
@@ -852,12 +809,7 @@ mod tests {
                 Msg::DurationLabelHours4 => Some(Msg::DurationLabelHours8),
                 Msg::DurationLabelHours8 => Some(Msg::DurationLabelUntilReboot),
                 Msg::DurationLabelUntilReboot => Some(Msg::DurationLabelPermanent),
-                Msg::DurationLabelPermanent => Some(Msg::ConsentWarningTitle),
-                Msg::ConsentWarningTitle => Some(Msg::ConsentWarningBody),
-                Msg::ConsentWarningBody => Some(Msg::ConsentConfirmOncePrefix),
-                Msg::ConsentConfirmOncePrefix => Some(Msg::ConsentConfirmPersist),
-                Msg::ConsentConfirmPersist => Some(Msg::ConsentCancel),
-                Msg::ConsentCancel => Some(Msg::ToggleUnavailableInstallationIncomplete),
+                Msg::DurationLabelPermanent => Some(Msg::ToggleUnavailableInstallationIncomplete),
                 Msg::ToggleUnavailableInstallationIncomplete => Some(Msg::ToggleUnavailableActionInFlight),
                 Msg::ToggleUnavailableActionInFlight => Some(Msg::OutcomeGrantedSummary),
                 Msg::OutcomeGrantedSummary => Some(Msg::OutcomeGrantedBody),
@@ -1120,7 +1072,7 @@ mod tests {
         let all = Msg::all();
         assert_eq!(
             all.len(),
-            87,
+            80,
             "Msg::all() must cover every arm; if this fails after adding/removing a variant, \
              Msg::next()'s match already forced you to update the chain — update this expected \
              count to match"

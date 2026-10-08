@@ -198,7 +198,6 @@ impl<W: Write + Send> NotifyPort for FreedesktopNotifier<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consent::granted_for_test;
     use crate::duration::GrantDuration;
     use crate::outcome::{classify, Action, EnableRequest};
 
@@ -213,7 +212,7 @@ mod tests {
         // output would fail here for reasons unrelated to what this test
         // actually pins (localization "never assert an English literal
         // against anything resolving language from the environment").
-        let action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000, granted_for_test()));
+        let action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000));
         let kind = classify(action, Some(0), true);
         let (summary, body) = action_notification_in(Lang::En, kind, "42 min");
         assert_eq!(summary, "Passwordless sudo enabled");
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn granted_appends_the_countdown_in_spanish_with_no_stray_placeholder() {
-        let action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000, granted_for_test()));
+        let action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000));
         let kind = classify(action, Some(0), true);
         let (summary, body) = action_notification_in(Lang::Es, kind, "42 min");
         assert_eq!(summary, "sudo sin contraseña activado");

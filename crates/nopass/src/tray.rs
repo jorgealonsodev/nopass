@@ -88,19 +88,10 @@ pub enum TrayEvent {
     /// displayed (`Trigger::MenuOpened`, design.md §3.4).
     MenuOpened,
     /// One entry inside "Activate during…" was clicked
-    /// ([`MenuNodeKind::ActivateFor`], design.md §1 item 3.1-3.6). Routing
-    /// this through [`crate::consent::ConsentState::grant`]/`arm` before
-    /// any invocation is task 8.1's job — this module only raises the
-    /// request, carrying nothing but the duration the user picked.
+    /// ([`MenuNodeKind::ActivateFor`], design.md §1 item 3.1-3.6).
+    /// Dispatching the enable is `app.rs`'s job — this module only raises
+    /// the request, carrying nothing but the duration the user picked.
     DurationSelected(GrantDuration),
-    /// The consent branch's "I understand — activate[, and don't warn me
-    /// again]" ([`MenuNodeKind::ConfirmActivate`], design.md §1 "The
-    /// consent branch"). `persist` is the "don't warn again" choice,
-    /// carried as its own action rather than a checkbox — see
-    /// [`crate::consent::ConsentState::confirm`]'s own doc comment for why.
-    ConsentConfirmed { persist: bool },
-    /// The consent branch's "Cancel" ([`MenuNodeKind::CancelActivate`]).
-    ConsentCancelled,
     /// A "Default duration" `RadioGroup` entry was selected
     /// ([`MenuNodeKind::SelectDefaultDuration`], design.md §1 item 7.1).
     /// Persisting this as the new configured default is task 8.1's job,
@@ -249,8 +240,6 @@ fn node_to_menu_item(node: &MenuNode) -> ksni::MenuItem<Inner> {
         // than `unreachable!()`, so a future structural change degrades
         // instead of panicking mid-menu-build.
         MenuNodeKind::SelectDefaultDuration(duration) => standard_item(node, TrayEvent::DefaultDurationSelected(duration)),
-        MenuNodeKind::ConfirmActivate { persist } => standard_item(node, TrayEvent::ConsentConfirmed { persist }),
-        MenuNodeKind::CancelActivate => standard_item(node, TrayEvent::ConsentCancelled),
         MenuNodeKind::ToggleAutostart => checkmark_item(node),
         MenuNodeKind::Quit => standard_item(node, TrayEvent::Quit),
         MenuNodeKind::Static => static_item(node),
@@ -476,28 +465,6 @@ mod tests {
     }
 
     #[test]
-    fn confirm_activate_node_raises_consent_confirmed_carrying_the_exact_persist_flag() {
-        for persist in [false, true] {
-            let node = leaf("I understand — activate", true, None, MenuNodeKind::ConfirmActivate { persist });
-            let ksni::MenuItem::Standard(item) = node_to_menu_item(&node) else { panic!("ConfirmActivate must render as a StandardItem") };
-
-            let (mut inner, rx) = test_inner();
-            (item.activate)(&mut inner);
-            assert_eq!(rx.try_recv(), Ok(TrayEvent::ConsentConfirmed { persist }), "persist={persist} must round-trip exactly");
-        }
-    }
-
-    #[test]
-    fn cancel_activate_node_raises_consent_cancelled() {
-        let node = leaf("Cancel", true, None, MenuNodeKind::CancelActivate);
-        let ksni::MenuItem::Standard(item) = node_to_menu_item(&node) else { panic!("CancelActivate must render as a StandardItem") };
-
-        let (mut inner, rx) = test_inner();
-        (item.activate)(&mut inner);
-        assert_eq!(rx.try_recv(), Ok(TrayEvent::ConsentCancelled));
-    }
-
-    #[test]
     fn quit_node_becomes_a_standard_item_that_raises_quit() {
         let node = leaf("Quit", true, None, MenuNodeKind::Quit);
         let ksni::MenuItem::Standard(item) = node_to_menu_item(&node) else { panic!("Quit must render as a StandardItem") };
@@ -595,14 +562,6 @@ mod tests {
         }
     }
 
-    /// The structural half of the same invariant menu.rs's own
-    /// `menu_rs_never_imports_ksni_or_the_action_enable_constructor` pins
-    /// on the other side of the boundary: this module never imports the
-    /// unconstructible `Granted` type or the `Action`/`EnableRequest`
-    /// constructors it gates. `node_to_menu_item` only ever raises a
-    /// `TrayEvent` — dispatching a confirmed action is Phase 8's job
-    /// (design.md §1 "The consent branch"; spec `activation-consent` "No
-    /// Grant Dispatch Without Recorded Consent").
     #[test]
     fn a_tray_that_has_never_been_given_a_node_tree_still_offers_quit() {
         // The production path, exactly: KsniTray::new sets `nodes` empty and
@@ -632,14 +591,18 @@ mod tests {
         assert!(labels.iter().any(|l| l == quit), "Quit must always be reachable: {labels:?}");
     }
 
+    /// The structural half of the same invariant menu.rs's own
+    /// `menu_rs_never_imports_ksni_or_the_action_enable_constructor` pins
+    /// on the other side of the boundary: this module never imports the
+    /// `Action`/`EnableRequest` constructors. `node_to_menu_item` only ever
+    /// raises a `TrayEvent` — dispatching an action is `app.rs`'s job.
     #[test]
-    fn tray_rs_never_imports_the_unconstructible_granted_type_or_the_action_enable_constructor() {
+    fn tray_rs_never_imports_the_action_enable_constructor() {
         let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tray.rs")).unwrap();
         let production = source.split("#[cfg(test)]").next().expect("tray.rs always has a #[cfg(test)] module");
         let code: String =
             production.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
 
-        assert!(!code.contains("consent::Granted"), "tray.rs must never import the unconstructible Granted type");
         assert!(!code.contains("outcome::Action"), "tray.rs must never import Action — dispatch is Phase 8's job");
         assert!(!code.contains("EnableRequest"), "tray.rs must never name the Action::Enable constructor");
     }

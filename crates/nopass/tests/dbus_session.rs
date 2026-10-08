@@ -21,7 +21,7 @@
 //! - `sni_properties_match_the_view_model_for_each_tray_state` (7.4)
 //! - `exported_menu_matches_menu_tree_item_for_item_for_an_active_grant_including_radio_group_and_submenu_nesting`,
 //!   `exported_menu_matches_menu_tree_item_for_item_while_inactive_with_no_active_rule`, and
-//!   `exported_menu_reflects_the_consent_branch_and_cancel_raises_consent_cancelled_over_the_real_wire` (7.2 —
+//!   `exported_menu_with_a_default_config_offers_direct_activation_over_the_real_wire` (7.2 —
 //!   the full RF-03 tree over the wire, replacing M2's minimal-menu test)
 //! - `activate_over_the_real_sni_wire_raises_toggle_requested` and
 //!   `about_to_show_over_the_real_dbusmenu_wire_raises_menu_opened`
@@ -46,7 +46,6 @@ use nopass::instance::{self, AppInterface, Acquisition, APPLICATION_INTERFACE, O
 use nopass::menu::{menu_tree, MenuModel, MenuNode, MenuNodeKind};
 use nopass::notifications::{action_notification, already_running_notification, expiry_notification, Category, FreedesktopNotifier, NotifyPort};
 use nopass::config::Config;
-use nopass::consent::ConsentState;
 use nopass::duration::GrantDuration;
 use nopass::outcome::{classify, Action, EnableRequest, OutcomeKind};
 use nopass::reconcile::TrayState;
@@ -392,7 +391,6 @@ fn exported_menu_matches_menu_tree_item_for_item_for_an_active_grant_including_r
             file: FileReading::Parsed(status),
             now: NOW,
             config: Config { default_duration: GrantDuration::Hours4, warning_acknowledged: true },
-            consent_branch: None,
             autostart: AutostartState::Enabled,
             polkit: nopass::preflight::PolkitReadiness::Ready,
             action_in_flight: false,
@@ -453,7 +451,6 @@ fn exported_menu_matches_menu_tree_item_for_item_while_inactive_with_no_active_r
             file: FileReading::Absent,
             now: 0,
             config: Config { default_duration: GrantDuration::Minutes15, warning_acknowledged: true },
-            consent_branch: None,
             autostart: AutostartState::Disabled,
             polkit: nopass::preflight::PolkitReadiness::Ready,
             action_in_flight: false,
@@ -493,7 +490,6 @@ fn exported_menu_reflects_action_missing_polkit_readiness_and_a_later_render_rec
             file: FileReading::Absent,
             now: 0,
             config: Config { default_duration: GrantDuration::Hour1, warning_acknowledged: true },
-            consent_branch: None,
             autostart: AutostartState::Disabled,
             polkit: nopass::preflight::PolkitReadiness::ActionMissing("action_not_registered"),
             action_in_flight: false,
@@ -522,39 +518,35 @@ fn exported_menu_reflects_action_missing_polkit_readiness_and_a_later_render_rec
     });
 }
 
-/// The consent branch (design.md §1 "The consent branch"; spec
-/// `activation-consent` "First Activation Branches the Menu Instead of
-/// Granting") replaces the exported tree's first two items exactly as it
-/// does bus-free in `menu.rs`, and clicking "Cancel" over the real wire
-/// raises exactly `TrayEvent::ConsentCancelled` — never anything that
-/// could construct an `Action::Enable` (this module's own
-/// `tray_rs_never_imports_the_unconstructible_granted_type_or_the_action_enable_constructor`
-/// pins the structural half of the same guarantee).
+/// Direct activation over the real wire: with the schema-default config
+/// (a fresh install, no `config.toml`), the exported tree offers the
+/// toggle and "Activate during…" as-is, and clicking a duration raises
+/// exactly `TrayEvent::DurationSelected` — no warning rows sit in between.
 #[test]
-fn exported_menu_reflects_the_consent_branch_and_cancel_raises_consent_cancelled_over_the_real_wire() {
-    skip_unless_lane_b!("exported_menu_reflects_the_consent_branch_and_cancel_raises_consent_cancelled_over_the_real_wire");
+fn exported_menu_with_a_default_config_offers_direct_activation_over_the_real_wire() {
+    skip_unless_lane_b!("exported_menu_with_a_default_config_offers_direct_activation_over_the_real_wire");
     let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     futures_lite::future::block_on(async {
         let (_watcher_conn, registered) = spawn_fake_watcher().await;
-
-        let mut consent = ConsentState::from_config(&Config { default_duration: GrantDuration::Hour1, warning_acknowledged: false });
-        consent.arm(GrantDuration::Hours4);
 
         let model = MenuModel {
             view: ViewModel::from_state("jorge", &TrayState::Inactive, 0),
             state: TrayState::Inactive,
             file: FileReading::Absent,
             now: 0,
-            config: Config { default_duration: GrantDuration::Hour1, warning_acknowledged: false },
-            consent_branch: consent.branch(),
+            config: Config::defaults(),
             autostart: AutostartState::Disabled,
             polkit: nopass::preflight::PolkitReadiness::Ready,
             action_in_flight: false,
         };
-        assert!(model.consent_branch.is_some(), "precondition: a duration must be armed and unacknowledged");
         let expected = menu_tree(&model);
-        assert_eq!(expected[0].kind, MenuNodeKind::Static, "precondition: row 0 must be the branch's insensitive warning title");
+        assert_eq!(expected[0].kind, MenuNodeKind::Toggle, "precondition: row 0 must be the toggle itself");
+        assert_eq!(
+            expected[1].children[2].kind,
+            MenuNodeKind::ActivateFor(GrantDuration::Hours4),
+            "precondition: GrantDuration::ALL[2] == Hours4"
+        );
 
         let (tray, events) =
             KsniTray::spawn(model.view.clone()).await.expect("spawn must succeed with a fake watcher present");
@@ -565,12 +557,12 @@ fn exported_menu_reflects_the_consent_branch_and_cancel_raises_consent_cancelled
         let (root, menu_proxy) = read_full_menu_tree(&destination).await;
         assert_tree_matches(&root.children, &expected);
 
-        let cancel_id = root.children[4].id; // warning title, warning body, confirm-once, confirm-persist, Cancel
-        menu_proxy.event(cancel_id, "clicked", OwnedValue::from(0u8), 0).await.expect("Event(CancelActivate, clicked) must be accepted");
+        let hours4_id = root.children[1].children[2].id;
+        menu_proxy.event(hours4_id, "clicked", OwnedValue::from(0u8), 0).await.expect("Event(ActivateFor, clicked) must be accepted");
         assert_eq!(
             recv_or_none(&events).await,
-            Some(TrayEvent::ConsentCancelled),
-            "clicking Cancel in the consent branch must raise exactly ConsentCancelled"
+            Some(TrayEvent::DurationSelected(GrantDuration::Hours4)),
+            "clicking a duration must raise exactly DurationSelected(Hours4)"
         );
     });
 }
@@ -779,12 +771,7 @@ fn successful_action_and_detected_expiry_each_produce_a_delivered_notification()
         let (_daemon_conn, calls) = spawn_fake_notifications().await;
         let notifier = FreedesktopNotifier::new();
 
-        let consent = ConsentState::from_config(&Config {
-            default_duration: GrantDuration::Hour1,
-            warning_acknowledged: true,
-        });
-        let granted_token = consent.grant().expect("an acknowledged ConsentState always yields Granted");
-        let enable_action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000, granted_token));
+        let enable_action = Action::Enable(EnableRequest::new(GrantDuration::Hour1, 1_700_000_000));
         let granted = classify(enable_action, Some(0), true);
         let (summary, body) = action_notification(granted, "1 hour");
         notifier.post(Category::Action, &summary, &body);

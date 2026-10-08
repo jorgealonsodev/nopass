@@ -139,7 +139,6 @@ impl Drop for Ticket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consent::granted_for_test;
     use crate::duration::GrantDuration;
     use crate::outcome::EnableRequest;
     use crate::probe;
@@ -153,10 +152,10 @@ mod tests {
     }
 
     /// Builds an `Action::Enable` via the real `EnableRequest::new`
-    /// constructor (design.md §3 D3) — `GrantDuration::Hour1` at `at`
+    /// constructor — `GrantDuration::Hour1` at `at`
     /// resolves to `--until <at + 3600>`.
     fn enable(at: u64) -> Action {
-        Action::Enable(EnableRequest::new(GrantDuration::Hour1, at, granted_for_test()))
+        Action::Enable(EnableRequest::new(GrantDuration::Hour1, at))
     }
 
     // ---- 5.2: exact pkexec argv, env pass-through list ----

@@ -29,8 +29,7 @@ pub const TICK_INTERVAL_SECS: u64 = 60;
 /// What the reactor's adapters hand to `app::run` (design.md §2 `event`).
 ///
 /// Deliberately not `Clone`/`PartialEq`/`Eq`: `ActionFinished` carries an
-/// [`Action`], which (design.md §3 D3) holds a `Granted` proof-of-consent
-/// that cannot be duplicated — one `Granted` buys exactly one invocation.
+/// [`Action`], which is not `Clone` — one request is one invocation.
 #[derive(Debug)]
 pub enum Event {
     /// `watch::Watch` observed a debounced change under `<uid>.state`
@@ -65,17 +64,9 @@ pub enum Event {
     /// (design.md §5, §6.2).
     ActionFinished(Action, Result<SpawnOutcome, RunnerError>),
     /// One entry inside "Activate during…" was clicked (design.md §1 item
-    /// 3.1-3.6; task 8.1). Routed through
-    /// `crate::consent::ConsentState::grant`/`arm` before any invocation —
-    /// never dispatched directly by this variant's mere existence.
+    /// 3.1-3.6; task 8.1). `app.rs` dispatches an enable of exactly this
+    /// duration; polkit's authentication dialog is the confirmation.
     DurationSelected(GrantDuration),
-    /// The consent branch's "I understand — activate[, and don't warn me
-    /// again]" (design.md §1 "The consent branch"; spec
-    /// `activation-consent` "Confirming the branch grants exactly once").
-    ConsentConfirmed { persist: bool },
-    /// The consent branch's "Cancel" (spec `activation-consent`
-    /// "Cancelling the branch grants nothing").
-    ConsentCancelled,
     /// A "Default duration" `RadioGroup` entry was selected (design.md §1
     /// item 7.1; spec `tray-menu` "Selecting a new default moves the
     /// marker and persists it").
@@ -104,9 +95,9 @@ impl From<TrayEvent> for Event {
             TrayEvent::MenuOpened => Event::MenuOpened,
             TrayEvent::Quit => Event::Quit,
             // Task 8.7 finishes the mapping Phase 7 (`tray.rs`) left
-            // partial: the full RF-03 menu's duration selection, consent
-            // confirm/cancel, default-duration selection, and autostart
-            // toggle all reach `app.rs`'s consent/config/autostart wiring
+            // partial: the full RF-03 menu's duration selection,
+            // default-duration selection, and autostart toggle all reach
+            // `app.rs`'s activation/config/autostart wiring
             // through here now — see `app.rs::handle` for what each one
             // does. Wiring `render_menu` (task 8.7/8.1) without this
             // change landing in the same commit would let a real click
@@ -114,8 +105,6 @@ impl From<TrayEvent> for Event {
             // panic (exit 101) on the very first menu interaction; both
             // land together.
             TrayEvent::DurationSelected(d) => Event::DurationSelected(d),
-            TrayEvent::ConsentConfirmed { persist } => Event::ConsentConfirmed { persist },
-            TrayEvent::ConsentCancelled => Event::ConsentCancelled,
             TrayEvent::DefaultDurationSelected(d) => Event::DefaultDurationSelected(d),
             TrayEvent::AutostartToggled => Event::AutostartToggled,
         }
@@ -155,11 +144,6 @@ mod tests {
             Event::from(TrayEvent::DurationSelected(GrantDuration::Hours4)),
             Event::DurationSelected(GrantDuration::Hours4)
         ));
-        assert!(matches!(
-            Event::from(TrayEvent::ConsentConfirmed { persist: true }),
-            Event::ConsentConfirmed { persist: true }
-        ));
-        assert!(matches!(Event::from(TrayEvent::ConsentCancelled), Event::ConsentCancelled));
         assert!(matches!(
             Event::from(TrayEvent::DefaultDurationSelected(GrantDuration::Hour1)),
             Event::DefaultDurationSelected(GrantDuration::Hour1)

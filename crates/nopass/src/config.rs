@@ -1,5 +1,5 @@
 //! `~/.config/nopass/config.toml`: the persisted default grant duration and
-//! the "don't warn again" consent flag (design.md §4 D4; spec `user-config`
+//! the legacy "don't warn again" flag (design.md §4 D4; spec `user-config`
 //! (all)).
 //!
 //! Mirrors `state.rs`'s `FileReading { Parsed, Absent, Faulted }` shape —
@@ -49,14 +49,16 @@ pub enum ConfigReading {
 }
 
 /// The two persisted preferences: the default grant duration a left-click
-/// or an unqualified "Activate" offers, and whether the first-activation
-/// consent warning has already been acknowledged.
+/// or an unqualified "Activate" offers, and the legacy first-activation
+/// warning flag.
 ///
-/// `warning_acknowledged` is the in-memory sense (`true` = do not warn);
-/// the persisted TOML key is `warn_before_activation` (the user-facing
-/// sense) and is its exact negation on both read and write — see
-/// [`read`]/[`write`]. The name and the negation are both intentional;
-/// they must never drift into agreement.
+/// `warning_acknowledged` no longer gates anything: activation dispatches
+/// straight to `pkexec`, whose polkit dialog is the confirmation. The
+/// field is kept only so existing files keep loading unchanged and a
+/// write (e.g. a new default duration) round-trips the user's stored
+/// value instead of rewriting it. It is the in-memory sense (`true` = do
+/// not warn); the persisted TOML key is `warn_before_activation` and is
+/// its exact negation on both read and write — see [`read`]/[`write`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
     pub default_duration: GrantDuration,
@@ -65,9 +67,9 @@ pub struct Config {
 
 impl Config {
     /// The conservative schema defaults (spec `user-config` "Schema and
-    /// Defaults"): `default_duration = 1h`, and re-warn until the user
-    /// explicitly says otherwise (`warning_acknowledged = false`, i.e.
-    /// persisted `warn_before_activation = true`).
+    /// Defaults"): `default_duration = 1h`, and the legacy flag's
+    /// historical default (`warning_acknowledged = false`, i.e. persisted
+    /// `warn_before_activation = true`) — which no longer gates anything.
     pub fn defaults() -> Self {
         Config { default_duration: GrantDuration::Hour1, warning_acknowledged: false }
     }
@@ -239,6 +241,33 @@ mod tests {
         let resolved = path_from_env(Some(""), Some(home_str));
 
         assert_eq!(resolved, home.join(".config").join("nopass").join("config.toml"));
+    }
+
+    // ---- legacy warning flag: still parses, never a fault ----
+
+    #[test]
+    fn a_legacy_config_carrying_the_warning_flag_still_parses_without_a_fault() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        for (flag, acknowledged) in [("false", true), ("true", false)] {
+            // The persisted key, plus the in-memory name some hand-edited
+            // files carry — an unknown key that must simply be ignored.
+            std::fs::write(
+                &path,
+                format!("default_duration = \"4h\"\nwarn_before_activation = {flag}\nwarning_acknowledged = true\n"),
+            )
+            .unwrap();
+
+            let reading = read(&path);
+
+            assert_eq!(
+                reading,
+                ConfigReading::Parsed(Config { default_duration: GrantDuration::Hours4, warning_acknowledged: acknowledged }),
+                "warn_before_activation = {flag} must still load"
+            );
+            assert_eq!(resolve(&reading).1, None, "a legacy flag must never surface as a config fault");
+        }
     }
 
     // ---- Absent handling in resolve (task 2.3) ----
